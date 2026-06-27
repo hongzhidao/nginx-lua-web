@@ -142,6 +142,7 @@ ngx_http_lua_init_process(ngx_cycle_t *cycle)
     }
 
     luaL_openlibs(lmcf->lua);
+    ngx_lua_web_stream_register(lmcf->lua);
 
     if (ngx_http_lua_init_content_handlers(cycle, lmcf) != NGX_OK) {
         lua_close(lmcf->lua);
@@ -293,12 +294,18 @@ ngx_http_lua_cleanup(void *data)
 {
     ngx_http_lua_ctx_t  *ctx = data;
 
+    if (ctx->state != NULL && ctx->stream_ref != LUA_NOREF) {
+        luaL_unref(ctx->state, LUA_REGISTRYINDEX, ctx->stream_ref);
+        ctx->stream_ref = LUA_NOREF;
+    }
+
     if (ctx->state != NULL && ctx->coroutine_ref != LUA_NOREF) {
         luaL_unref(ctx->state, LUA_REGISTRYINDEX, ctx->coroutine_ref);
         ctx->coroutine_ref = LUA_NOREF;
     }
 
     ngx_lua_ctx_destroy(ctx->lua);
+    ctx->lua = NULL;
 }
 
 
@@ -354,7 +361,7 @@ ngx_http_lua_body_handler(ngx_http_request_t *r)
 
     ctx->request_body = body;
 
-    rc = ngx_lua_web_stream_start_source(body);
+    rc = ngx_lua_web_stream_start_source(coroutine, body);
     if (rc != NGX_OK) {
         ngx_http_finalize_request(r, NGX_HTTP_INTERNAL_SERVER_ERROR);
         return;
@@ -376,9 +383,17 @@ static void
 ngx_http_lua_wake_handler(ngx_lua_web_stream_t *stream, void *data)
 {
     ngx_http_request_t  *r = data;
+    ngx_http_lua_ctx_t  *ctx;
     ngx_int_t  rc;
 
     (void) stream;
+
+    ctx = ngx_http_get_module_ctx(r, ngx_http_lua_module);
+
+    if (ctx->stream_ref != LUA_NOREF) {
+        luaL_unref(ctx->state, LUA_REGISTRYINDEX, ctx->stream_ref);
+        ctx->stream_ref = LUA_NOREF;
+    }
 
     rc = ngx_http_lua_content_handler(r, 0);
 
@@ -411,6 +426,9 @@ ngx_http_lua_content_handler(ngx_http_request_t *r, ngx_uint_t narg)
                               "lua handler yielded without a stream wake");
                 return NGX_ERROR;
             }
+
+            lua_pushvalue(ctx->coroutine, -1);
+            ctx->stream_ref = luaL_ref(ctx->coroutine, LUA_REGISTRYINDEX);
 
             ngx_lua_web_stream_set_wake(stream, ngx_http_lua_wake_handler, r);
             lua_pop(ctx->coroutine, nres);
@@ -490,6 +508,7 @@ ngx_http_lua_handler(ngx_http_request_t *r)
     }
 
     ctx->coroutine_ref = LUA_NOREF;
+    ctx->stream_ref = LUA_NOREF;
 
     lua_ctx = ngx_lua_ctx_create(r->connection->log);
     if (lua_ctx == NULL) {

@@ -12,6 +12,7 @@ TEST_URL = os.environ.get("TEST_URL", "http://127.0.0.1:18080/hello")
 TEST_MARKER = os.environ.get("TEST_MARKER")
 EXPECTED_BODY = b"hello world"
 REQUEST_BODY = b"request body read through stream"
+STREAM_BODY = b"start:pull"
 
 
 def request():
@@ -77,7 +78,7 @@ def main():
             with open(TEST_MARKER, "rb") as marker:
                 marker_body = marker.read()
 
-            if marker_body != b"":
+            if marker_body != b"\n" + STREAM_BODY:
                 print(f"GET /hello expected empty body marker, got {marker_body!r}")
                 print("FAIL")
                 return 1
@@ -89,12 +90,14 @@ def main():
                 with open(TEST_MARKER, "rb") as marker:
                     marker_body = marker.read()
 
-                if marker_body == REQUEST_BODY:
+                if marker_body == REQUEST_BODY + b"\n" + STREAM_BODY:
                     print("POST /hello streams request body to Lua")
+                    print("Lua Stream.new supports start and pull")
                     print("OK")
                     return 0
 
-                print(f"POST body marker expected {REQUEST_BODY!r}, got {marker_body!r}")
+                expected_marker = REQUEST_BODY + b"\n" + STREAM_BODY
+                print(f"POST body marker expected {expected_marker!r}, got {marker_body!r}")
                 print("FAIL")
                 return 1
 

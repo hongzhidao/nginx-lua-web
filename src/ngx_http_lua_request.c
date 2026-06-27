@@ -15,9 +15,9 @@
 
 
 static ngx_int_t ngx_http_lua_request_body_source_start(
-    ngx_lua_web_stream_t *stream, void *data);
+    lua_State *L, ngx_lua_web_stream_t *stream, void *data);
 static ngx_int_t ngx_http_lua_request_body_source_pull(
-    ngx_lua_web_stream_t *stream, void *data);
+    lua_State *L, ngx_lua_web_stream_t *stream, void *data);
 static void ngx_http_lua_request_read_handler(ngx_http_request_t *r);
 static ngx_uint_t ngx_http_lua_request_body_source_enqueue(
     ngx_http_request_t *r, ngx_lua_web_stream_t *stream);
@@ -52,10 +52,12 @@ ngx_http_lua_request_body_source_create(lua_State *L, ngx_http_request_t *r)
 
 
 static ngx_int_t
-ngx_http_lua_request_body_source_start(ngx_lua_web_stream_t *stream,
-    void *data)
+ngx_http_lua_request_body_source_start(lua_State *L,
+    ngx_lua_web_stream_t *stream, void *data)
 {
     ngx_http_request_t  *r;
+
+    (void) L;
 
     r = data;
 
@@ -70,11 +72,13 @@ ngx_http_lua_request_body_source_start(ngx_lua_web_stream_t *stream,
 
 
 static ngx_int_t
-ngx_http_lua_request_body_source_pull(ngx_lua_web_stream_t *stream,
-    void *data)
+ngx_http_lua_request_body_source_pull(lua_State *L,
+    ngx_lua_web_stream_t *stream, void *data)
 {
     ngx_int_t            rc;
     ngx_http_request_t  *r;
+
+    (void) L;
 
     r = data;
 
@@ -124,13 +128,13 @@ ngx_http_lua_request_read_handler(ngx_http_request_t *r)
     ctx = ngx_http_get_module_ctx(r, ngx_http_lua_module);
     stream = ctx->request_body;
 
-    rc = ngx_lua_web_stream_pull_source(stream);
+    rc = ngx_lua_web_stream_pull_source(ctx->coroutine, stream);
     if (rc >= NGX_HTTP_SPECIAL_RESPONSE) {
         ngx_http_finalize_request(r, rc);
         return;
     }
 
-    if (ngx_lua_web_stream_has_pending(stream)
+    if (ngx_lua_web_stream_has_data(stream)
         || ngx_lua_web_stream_is_closed(stream))
     {
         ngx_lua_web_stream_wake(stream);

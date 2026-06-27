@@ -21,6 +21,7 @@ typedef struct {
     lua_State              *state;
     lua_State              *coroutine;
     int                     coroutine_ref;
+    int                     stream_ref;
     ngx_lua_web_stream_t   *request_body;
 } ngx_http_lua_ctx_t;
 
