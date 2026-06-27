@@ -25,6 +25,8 @@ struct ngx_lua_web_stream_s {
     ngx_chain_t                  *in;
     ngx_chain_t                 **last;
     ngx_lua_web_stream_source_t  *source;
+    ngx_lua_web_stream_wake_pt    wake;
+    void                         *wake_data;
     unsigned                      closed:1;
 };
 
@@ -163,29 +165,52 @@ ngx_lua_web_stream_read(lua_State *L, ngx_lua_web_stream_t *stream)
 }
 
 
+void
+ngx_lua_web_stream_set_wake(ngx_lua_web_stream_t *stream,
+    ngx_lua_web_stream_wake_pt wake, void *data)
+{
+    stream->wake = wake;
+    stream->wake_data = data;
+}
+
+
+void
+ngx_lua_web_stream_wake(ngx_lua_web_stream_t *stream)
+{
+    ngx_lua_web_stream_wake_pt  wake;
+    void                       *data;
+
+    if (stream->wake == NULL) {
+        return;
+    }
+
+    wake = stream->wake;
+    data = stream->wake_data;
+    stream->wake = NULL;
+    stream->wake_data = NULL;
+
+    wake(stream, data);
+}
+
+
 ngx_uint_t
 ngx_lua_web_stream_has_pending(ngx_lua_web_stream_t *stream)
 {
-    return stream != NULL && stream->in != NULL;
+    return stream->in != NULL;
 }
 
 
 ngx_uint_t
 ngx_lua_web_stream_is_closed(ngx_lua_web_stream_t *stream)
 {
-    return stream != NULL && stream->closed;
+    return stream->closed;
 }
 
 
 void
-ngx_lua_web_stream_enqueue_chain(ngx_lua_web_stream_t *stream,
-    ngx_chain_t *in)
+ngx_lua_web_stream_enqueue(ngx_lua_web_stream_t *stream, ngx_chain_t *in)
 {
     ngx_chain_t  *next;
-
-    if (stream == NULL) {
-        return;
-    }
 
     while (in) {
         next = in->next;
@@ -213,27 +238,20 @@ ngx_lua_web_stream_close(ngx_lua_web_stream_t *stream)
 static int
 ngx_lua_web_stream_read_method(lua_State *L)
 {
-    ngx_int_t              rc;
-    ngx_lua_ctx_t         *ctx;
-    ngx_lua_web_stream_t  *stream;
+    ngx_int_t  rc;
 
-    stream = ngx_lua_web_stream_check(L, 1);
+    (void) ngx_lua_web_stream_check(L, 1);
 
-    rc = ngx_lua_web_stream_read(L, stream);
+    rc = ngx_lua_web_stream_read(L, ngx_lua_web_stream_get(L, 1));
 
     if (rc == NGX_OK) {
         return 1;
     }
 
     if (rc == NGX_AGAIN) {
-        ctx = ngx_lua_get_ctx(L);
-        if (ctx == NULL) {
-            return luaL_error(L, "stream read has no request context");
-        }
+        lua_pushvalue(L, 1);
 
-        ctx->waiting_stream = stream;
-
-        return lua_yieldk(L, 0, 0, ngx_lua_web_stream_read_continue);
+        return lua_yieldk(L, 1, 0, ngx_lua_web_stream_read_continue);
     }
 
     return luaL_error(L, "stream read failed");
@@ -244,30 +262,23 @@ static int
 ngx_lua_web_stream_read_continue(lua_State *L, int status,
     lua_KContext opaque)
 {
-    ngx_int_t              rc;
-    ngx_lua_ctx_t         *ctx;
-    ngx_lua_web_stream_t  *stream;
+    ngx_int_t  rc;
 
     (void) status;
     (void) opaque;
 
-    stream = ngx_lua_web_stream_check(L, 1);
+    (void) ngx_lua_web_stream_check(L, 1);
 
-    rc = ngx_lua_web_stream_read(L, stream);
+    rc = ngx_lua_web_stream_read(L, ngx_lua_web_stream_get(L, 1));
 
     if (rc == NGX_OK) {
         return 1;
     }
 
     if (rc == NGX_AGAIN) {
-        ctx = ngx_lua_get_ctx(L);
-        if (ctx == NULL) {
-            return luaL_error(L, "stream read has no request context");
-        }
+        lua_pushvalue(L, 1);
 
-        ctx->waiting_stream = stream;
-
-        return lua_yieldk(L, 0, 0, ngx_lua_web_stream_read_continue);
+        return lua_yieldk(L, 1, 0, ngx_lua_web_stream_read_continue);
     }
 
     return luaL_error(L, "stream read failed");
@@ -292,6 +303,20 @@ ngx_lua_web_stream_check(lua_State *L, int index)
 
     ud = luaL_checkudata(L, index, NGX_LUA_WEB_STREAM_METATABLE);
     luaL_argcheck(L, ud != NULL && ud->stream != NULL, index, "Stream expected");
+
+    return ud->stream;
+}
+
+
+ngx_lua_web_stream_t *
+ngx_lua_web_stream_get(lua_State *L, int index)
+{
+    ngx_lua_web_stream_ud_t  *ud;
+
+    ud = luaL_testudata(L, index, NGX_LUA_WEB_STREAM_METATABLE);
+    if (ud == NULL) {
+        return NULL;
+    }
 
     return ud->stream;
 }

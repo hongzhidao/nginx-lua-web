@@ -15,15 +15,9 @@
 #include "ngx_lua_pool.h"
 
 
-typedef struct ngx_lua_web_stream_s  ngx_lua_web_stream_t;
-
 typedef struct {
     ngx_lua_pool_t          *pool;
     void                    *data;
-    lua_State               *state;
-    lua_State               *coroutine;
-    int                      coroutine_ref;
-    ngx_lua_web_stream_t    *waiting_stream;
 } ngx_lua_ctx_t;
 
 

@@ -43,7 +43,8 @@ static ngx_int_t ngx_http_lua_init_content_handler(ngx_cycle_t *cycle,
     ngx_http_lua_main_conf_t *lmcf, ngx_http_lua_loc_conf_t *llcf);
 static void ngx_http_lua_cleanup(void *data);
 static void ngx_http_lua_body_handler(ngx_http_request_t *r);
-static void ngx_http_lua_read_handler(ngx_http_request_t *r);
+static void ngx_http_lua_wake_handler(ngx_lua_web_stream_t *stream,
+    void *data);
 static ngx_int_t ngx_http_lua_content_handler(ngx_http_request_t *r,
     ngx_uint_t narg);
 static ngx_int_t ngx_http_lua_send_response(ngx_http_request_t *r);
@@ -290,14 +291,14 @@ ngx_http_lua_init_content_handler(ngx_cycle_t *cycle,
 static void
 ngx_http_lua_cleanup(void *data)
 {
-    ngx_lua_ctx_t  *ctx = data;
+    ngx_http_lua_ctx_t  *ctx = data;
 
     if (ctx->state != NULL && ctx->coroutine_ref != LUA_NOREF) {
         luaL_unref(ctx->state, LUA_REGISTRYINDEX, ctx->coroutine_ref);
         ctx->coroutine_ref = LUA_NOREF;
     }
 
-    ngx_lua_ctx_destroy(ctx);
+    ngx_lua_ctx_destroy(ctx->lua);
 }
 
 
@@ -307,7 +308,7 @@ ngx_http_lua_body_handler(ngx_http_request_t *r)
     lua_State      *coroutine;
     lua_State      *state;
     ngx_int_t                  rc;
-    ngx_lua_ctx_t             *ctx;
+    ngx_http_lua_ctx_t       *ctx;
     ngx_http_lua_main_conf_t  *lmcf;
     ngx_http_lua_loc_conf_t   *llcf;
     ngx_lua_web_stream_source_t  *body_source;
@@ -329,7 +330,7 @@ ngx_http_lua_body_handler(ngx_http_request_t *r)
     ctx->coroutine = coroutine;
     ctx->coroutine_ref = luaL_ref(state, LUA_REGISTRYINDEX);
 
-    ngx_lua_set_ctx(coroutine, ctx);
+    ngx_lua_set_ctx(coroutine, ctx->lua);
 
     lua_rawgeti(state, LUA_REGISTRYINDEX, llcf->handler_ref);
     lua_xmove(state, coroutine, 1);
@@ -351,6 +352,8 @@ ngx_http_lua_body_handler(ngx_http_request_t *r)
         return;
     }
 
+    ctx->request_body = body;
+
     rc = ngx_lua_web_stream_start_source(body);
     if (rc != NGX_OK) {
         ngx_http_finalize_request(r, NGX_HTTP_INTERNAL_SERVER_ERROR);
@@ -370,15 +373,12 @@ ngx_http_lua_body_handler(ngx_http_request_t *r)
 
 
 static void
-ngx_http_lua_read_handler(ngx_http_request_t *r)
+ngx_http_lua_wake_handler(ngx_lua_web_stream_t *stream, void *data)
 {
+    ngx_http_request_t  *r = data;
     ngx_int_t  rc;
 
-    if (r->connection->read->timedout) {
-        r->connection->timedout = 1;
-        ngx_http_finalize_request(r, NGX_HTTP_REQUEST_TIME_OUT);
-        return;
-    }
+    (void) stream;
 
     rc = ngx_http_lua_content_handler(r, 0);
 
@@ -393,24 +393,28 @@ ngx_http_lua_read_handler(ngx_http_request_t *r)
 static ngx_int_t
 ngx_http_lua_content_handler(ngx_http_request_t *r, ngx_uint_t narg)
 {
-    int             nres;
-    int             status;
-    ngx_lua_ctx_t  *ctx;
+    int                    nres;
+    int                    status;
+    ngx_http_lua_ctx_t    *ctx;
+    ngx_lua_web_stream_t  *stream;
 
     ctx = ngx_http_get_module_ctx(r, ngx_http_lua_module);
-    ctx->waiting_stream = NULL;
 
     status = lua_resume(ctx->coroutine, ctx->state, (int) narg, &nres);
 
     if (status != LUA_OK) {
         if (status == LUA_YIELD) {
-            if (ctx->waiting_stream == NULL) {
+            stream = nres == 1 ? ngx_lua_web_stream_get(ctx->coroutine, -1)
+                               : NULL;
+            if (stream == NULL) {
                 ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
-                              "lua handler yielded without a stream waiter");
+                              "lua handler yielded without a stream wake");
                 return NGX_ERROR;
             }
 
-            r->read_event_handler = ngx_http_lua_read_handler;
+            ngx_lua_web_stream_set_wake(stream, ngx_http_lua_wake_handler, r);
+            lua_pop(ctx->coroutine, nres);
+
             return NGX_AGAIN;
         }
 
@@ -466,9 +470,10 @@ ngx_http_lua_handler(ngx_http_request_t *r)
 {
     ngx_int_t                  rc;
     ngx_http_cleanup_t        *cln;
+    ngx_http_lua_ctx_t        *ctx;
     ngx_http_lua_main_conf_t  *lmcf;
     ngx_http_lua_loc_conf_t   *llcf;
-    ngx_lua_ctx_t             *ctx;
+    ngx_lua_ctx_t             *lua_ctx;
 
     lmcf = ngx_http_get_module_main_conf(r, ngx_http_lua_module);
     llcf = ngx_http_get_module_loc_conf(r, ngx_http_lua_module);
@@ -479,21 +484,29 @@ ngx_http_lua_handler(ngx_http_request_t *r)
         return NGX_HTTP_INTERNAL_SERVER_ERROR;
     }
 
-    ctx = ngx_lua_ctx_create(r->connection->log);
+    ctx = ngx_pcalloc(r->pool, sizeof(ngx_http_lua_ctx_t));
     if (ctx == NULL) {
+        return NGX_HTTP_INTERNAL_SERVER_ERROR;
+    }
+
+    ctx->coroutine_ref = LUA_NOREF;
+
+    lua_ctx = ngx_lua_ctx_create(r->connection->log);
+    if (lua_ctx == NULL) {
         return NGX_HTTP_INTERNAL_SERVER_ERROR;
     }
 
     cln = ngx_http_cleanup_add(r, 0);
     if (cln == NULL) {
-        ngx_lua_ctx_destroy(ctx);
+        ngx_lua_ctx_destroy(lua_ctx);
         return NGX_HTTP_INTERNAL_SERVER_ERROR;
     }
 
     cln->handler = ngx_http_lua_cleanup;
     cln->data = ctx;
 
-    ctx->data = r;
+    ctx->lua = lua_ctx;
+    lua_ctx->data = r;
     ngx_http_set_ctx(r, ctx, ngx_http_lua_module);
 
     r->request_body_no_buffering = 1;

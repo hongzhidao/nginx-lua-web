@@ -18,6 +18,7 @@ static ngx_int_t ngx_http_lua_request_body_source_start(
     ngx_lua_web_stream_t *stream, void *data);
 static ngx_int_t ngx_http_lua_request_body_source_pull(
     ngx_lua_web_stream_t *stream, void *data);
+static void ngx_http_lua_request_read_handler(ngx_http_request_t *r);
 static ngx_uint_t ngx_http_lua_request_body_source_enqueue(
     ngx_http_request_t *r, ngx_lua_web_stream_t *stream);
 
@@ -99,7 +100,41 @@ ngx_http_lua_request_body_source_pull(ngx_lua_web_stream_t *stream,
         ngx_lua_web_stream_close(stream);
     }
 
+    if (rc == NGX_AGAIN) {
+        r->read_event_handler = ngx_http_lua_request_read_handler;
+    }
+
     return rc;
+}
+
+
+static void
+ngx_http_lua_request_read_handler(ngx_http_request_t *r)
+{
+    ngx_int_t              rc;
+    ngx_http_lua_ctx_t   *ctx;
+    ngx_lua_web_stream_t  *stream;
+
+    if (r->connection->read->timedout) {
+        r->connection->timedout = 1;
+        ngx_http_finalize_request(r, NGX_HTTP_REQUEST_TIME_OUT);
+        return;
+    }
+
+    ctx = ngx_http_get_module_ctx(r, ngx_http_lua_module);
+    stream = ctx->request_body;
+
+    rc = ngx_lua_web_stream_pull_source(stream);
+    if (rc >= NGX_HTTP_SPECIAL_RESPONSE) {
+        ngx_http_finalize_request(r, rc);
+        return;
+    }
+
+    if (ngx_lua_web_stream_has_pending(stream)
+        || ngx_lua_web_stream_is_closed(stream))
+    {
+        ngx_lua_web_stream_wake(stream);
+    }
 }
 
 
@@ -116,7 +151,7 @@ ngx_http_lua_request_body_source_enqueue(ngx_http_request_t *r,
     in = r->request_body->bufs;
     r->request_body->bufs = NULL;
 
-    ngx_lua_web_stream_enqueue_chain(stream, in);
+    ngx_lua_web_stream_enqueue(stream, in);
 
     return 1;
 }
