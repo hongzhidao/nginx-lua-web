@@ -12,6 +12,8 @@
 #include <lualib.h>
 
 #include "ngx_lua.h"
+#include "ngx_lua_web.h"
+#include "ngx_http_lua.h"
 
 
 typedef struct ngx_http_lua_loc_conf_s  ngx_http_lua_loc_conf_t;
@@ -292,6 +294,8 @@ ngx_http_lua_run_handler(ngx_http_request_t *r,
     lua_State      *L;
     ngx_int_t       rc;
     ngx_lua_ctx_t  *ctx;
+    ngx_lua_web_stream_source_t  *body_source;
+    ngx_lua_web_stream_t         *body;
 
     L = lmcf->lua;
 
@@ -314,7 +318,34 @@ ngx_http_lua_run_handler(ngx_http_request_t *r,
     lua_rawgeti(L, LUA_REGISTRYINDEX, llcf->handler_ref);
     lua_xmove(L, co, 1);
 
-    lua_pushnil(co);
+    body = ngx_lua_web_stream_create(co);
+    if (body == NULL) {
+        lua_pop(L, 1);
+        rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
+        goto done;
+    }
+
+    body_source = ngx_http_lua_request_body_source_create(co, r);
+    if (body_source == NULL) {
+        lua_pop(L, 1);
+        rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
+        goto done;
+    }
+
+    if (ngx_lua_web_stream_set_source(body, body_source) != NGX_OK) {
+        lua_pop(L, 1);
+        rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
+        goto done;
+    }
+
+    rc = ngx_lua_web_stream_start_source(body);
+    if (rc != NGX_OK) {
+        lua_pop(L, 1);
+        rc = NGX_HTTP_INTERNAL_SERVER_ERROR;
+        goto done;
+    }
+
+    ngx_lua_web_stream_push(co, body);
 
     status = lua_resume(co, L, 1, &nres);
 
