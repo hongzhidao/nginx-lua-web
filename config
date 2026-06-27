@@ -10,5 +10,10 @@ LINK_DEPS="$LINK_DEPS $lua_lib"
 NGX_ADDON_SRCS="$NGX_ADDON_SRCS \
     $ngx_addon_dir/src/ngx_lua.c \
     $ngx_addon_dir/src/ngx_lua_pool.c \
+    $ngx_addon_dir/src/ngx_lua_web_stream.c \
     $ngx_addon_dir/src/ngx_http_lua_module.c"
-NGX_ADDON_DEPS="$NGX_ADDON_DEPS $lua_lib"
+NGX_ADDON_DEPS="$NGX_ADDON_DEPS \
+    $lua_lib \
+    $ngx_addon_dir/src/ngx_lua.h \
+    $ngx_addon_dir/src/ngx_lua_pool.h \
+    $ngx_addon_dir/src/ngx_lua_web.h"
