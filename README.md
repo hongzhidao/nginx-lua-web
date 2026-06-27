@@ -11,9 +11,9 @@ enough to read in one sitting.
 Today it is deliberately minimal. The module registers a `lua_content`
 directive, links nginx against the embedded Lua source in `lua-5.5.0/`, loads
 the configured Lua file during worker startup, and runs its handler in a fresh
-Lua coroutine for each request. The HTTP response is still fixed at `404`; this
-keeps the first Lua integration step focused on loading and executing Lua code
-before the request and response APIs are added.
+Lua coroutine for each request. The HTTP response is still fixed at
+`hello world`; this keeps the first Lua integration step focused on loading and
+executing Lua code before the request and response APIs are added.
 
 Example configuration:
 
@@ -74,8 +74,8 @@ make test
 ```
 
 It starts `../nginx/objs/nginx`, sends a request to a location configured with
-`lua_content`, verifies that the response status is `404`, and checks that the
-Lua handler ran.
+`lua_content`, verifies that the response is `200 hello world`, and checks that
+the Lua handler ran.
 
 Build Nginx first if `../nginx/objs/nginx` does not exist. You can override the
 binary path:
@@ -94,7 +94,7 @@ Implemented:
 - `lua_content` location directive.
 - Loading Lua files during worker startup.
 - Per-request Lua coroutine execution.
-- Location content handler that runs Lua and then returns `404`.
+- Location content handler that runs Lua and then returns `hello world`.
 - Python runtime acceptance test.
 
 Not implemented yet:
