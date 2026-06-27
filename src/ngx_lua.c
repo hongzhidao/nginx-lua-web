@@ -7,6 +7,7 @@
 #include <ngx_core.h>
 
 #include <lua.h>
+#include <lauxlib.h>
 
 #include "ngx_lua.h"
 
@@ -29,6 +30,7 @@ ngx_lua_ctx_create(ngx_log_t *log)
     }
 
     ctx->pool = pool;
+    ctx->coroutine_ref = LUA_NOREF;
 
     return ctx;
 }

@@ -91,7 +91,9 @@ ngx_http_lua_request_body_source_pull(ngx_lua_web_stream_t *stream,
         return rc;
     }
 
-    ngx_http_lua_request_body_source_enqueue(r, stream);
+    if (ngx_http_lua_request_body_source_enqueue(r, stream)) {
+        return NGX_OK;
+    }
 
     if (rc == NGX_OK && !r->reading_body) {
         ngx_lua_web_stream_close(stream);

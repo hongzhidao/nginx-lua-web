@@ -15,7 +15,6 @@
 #include "ngx_lua.h"
 
 
-typedef struct ngx_lua_web_stream_s         ngx_lua_web_stream_t;
 typedef struct ngx_lua_web_stream_source_s  ngx_lua_web_stream_source_t;
 
 
@@ -38,6 +37,9 @@ ngx_int_t ngx_lua_web_stream_set_source(ngx_lua_web_stream_t *stream,
     ngx_lua_web_stream_source_t *source);
 ngx_int_t ngx_lua_web_stream_start_source(ngx_lua_web_stream_t *stream);
 ngx_int_t ngx_lua_web_stream_pull_source(ngx_lua_web_stream_t *stream);
+ngx_int_t ngx_lua_web_stream_read(lua_State *L, ngx_lua_web_stream_t *stream);
+ngx_uint_t ngx_lua_web_stream_has_pending(ngx_lua_web_stream_t *stream);
+ngx_uint_t ngx_lua_web_stream_is_closed(ngx_lua_web_stream_t *stream);
 
 void ngx_lua_web_stream_enqueue_chain(ngx_lua_web_stream_t *stream,
     ngx_chain_t *in);
