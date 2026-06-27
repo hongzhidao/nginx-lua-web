@@ -9,16 +9,27 @@ requests in nginx, run Lua handlers close to the server, and keep the API small
 enough to read in one sitting.
 
 Today it is deliberately minimal. The module registers a `lua_content`
-directive, links nginx against the embedded Lua source in `lua-5.5.0/`, and
-installs a content handler that currently returns `404`. That small loop gives
-the project a real nginx entry point, a build path, and a runtime test before
-the Lua request API is added.
+directive, links nginx against the embedded Lua source in `lua-5.5.0/`, loads
+the configured Lua file during worker startup, and runs its handler in a fresh
+Lua coroutine for each request. The HTTP response is still fixed at `404`; this
+keeps the first Lua integration step focused on loading and executing Lua code
+before the request and response APIs are added.
 
 Example configuration:
 
 ```nginx
 location /hello {
     lua_content app/hello.lua;
+}
+```
+
+Example Lua file:
+
+```lua
+return {
+    handler = function(r)
+        -- Request and response APIs are not implemented yet.
+    end
 }
 ```
 
@@ -63,7 +74,8 @@ make test
 ```
 
 It starts `../nginx/objs/nginx`, sends a request to a location configured with
-`lua_content`, and verifies that the response status is `404`.
+`lua_content`, verifies that the response status is `404`, and checks that the
+Lua handler ran.
 
 Build Nginx first if `../nginx/objs/nginx` does not exist. You can override the
 binary path:
@@ -80,12 +92,13 @@ Implemented:
 - Lua 5.5.0 linked as a static library in the Nginx module build.
 - HTTP module declaration.
 - `lua_content` location directive.
-- Location content handler that returns `404`.
+- Loading Lua files during worker startup.
+- Per-request Lua coroutine execution.
+- Location content handler that runs Lua and then returns `404`.
 - Python runtime acceptance test.
 
 Not implemented yet:
 
-- Request-time Lua execution.
-- Loading Lua files.
 - Request and response objects.
+- Lua-driven HTTP responses.
 - Fetch-style APIs and streaming bodies.

@@ -1,5 +1,8 @@
 return {
     handler = function(r)
-        return Response.new("hello world")
+        local marker = assert(os.getenv("TEST_MARKER"))
+        local file = assert(io.open(marker, "w"))
+        file:write("ok")
+        file:close()
     end
 }

@@ -9,17 +9,36 @@
 
 #include <lua.h>
 #include <lauxlib.h>
+#include <lualib.h>
+
+
+typedef struct ngx_http_lua_loc_conf_s  ngx_http_lua_loc_conf_t;
 
 
 typedef struct {
-    ngx_str_t  content;
-} ngx_http_lua_loc_conf_t;
+    ngx_array_t  *locations;
+    lua_State    *lua;
+} ngx_http_lua_main_conf_t;
+
+
+struct ngx_http_lua_loc_conf_s {
+    ngx_str_t   content;
+    ngx_int_t   handler_ref;
+};
 
 
 static char *ngx_http_lua_content(ngx_conf_t *cf, ngx_command_t *cmd,
     void *conf);
+static void *ngx_http_lua_create_main_conf(ngx_conf_t *cf);
 static void *ngx_http_lua_create_loc_conf(ngx_conf_t *cf);
-static ngx_int_t ngx_http_lua_init_module(ngx_cycle_t *cycle);
+static ngx_int_t ngx_http_lua_init_process(ngx_cycle_t *cycle);
+static void ngx_http_lua_exit_process(ngx_cycle_t *cycle);
+static ngx_int_t ngx_http_lua_init_content_handlers(ngx_cycle_t *cycle,
+    ngx_http_lua_main_conf_t *lmcf);
+static ngx_int_t ngx_http_lua_init_content_handler(ngx_cycle_t *cycle,
+    ngx_http_lua_main_conf_t *lmcf, ngx_http_lua_loc_conf_t *llcf);
+static ngx_int_t ngx_http_lua_run_handler(ngx_http_request_t *r,
+    ngx_http_lua_main_conf_t *lmcf, ngx_http_lua_loc_conf_t *llcf);
 static ngx_int_t ngx_http_lua_handler(ngx_http_request_t *r);
 
 
@@ -40,7 +59,7 @@ static ngx_http_module_t  ngx_http_lua_module_ctx = {
     NULL,                                  /* preconfiguration */
     NULL,                                  /* postconfiguration */
 
-    NULL,                                  /* create main configuration */
+    ngx_http_lua_create_main_conf,         /* create main configuration */
     NULL,                                  /* init main configuration */
 
     NULL,                                  /* create server configuration */
@@ -57,14 +76,28 @@ ngx_module_t  ngx_http_lua_module = {
     ngx_http_lua_commands,                 /* module directives */
     NGX_HTTP_MODULE,                       /* module type */
     NULL,                                  /* init master */
-    ngx_http_lua_init_module,              /* init module */
-    NULL,                                  /* init process */
+    NULL,                                  /* init module */
+    ngx_http_lua_init_process,             /* init process */
     NULL,                                  /* init thread */
     NULL,                                  /* exit thread */
-    NULL,                                  /* exit process */
+    ngx_http_lua_exit_process,             /* exit process */
     NULL,                                  /* exit master */
     NGX_MODULE_V1_PADDING
 };
+
+
+static void *
+ngx_http_lua_create_main_conf(ngx_conf_t *cf)
+{
+    ngx_http_lua_main_conf_t  *conf;
+
+    conf = ngx_pcalloc(cf->pool, sizeof(ngx_http_lua_main_conf_t));
+    if (conf == NULL) {
+        return NULL;
+    }
+
+    return conf;
+}
 
 
 static void *
@@ -77,24 +110,52 @@ ngx_http_lua_create_loc_conf(ngx_conf_t *cf)
         return NULL;
     }
 
+    conf->handler_ref = LUA_NOREF;
+
     return conf;
 }
 
 
 static ngx_int_t
-ngx_http_lua_init_module(ngx_cycle_t *cycle)
+ngx_http_lua_init_process(ngx_cycle_t *cycle)
 {
-    lua_State  *L;
+    ngx_http_lua_main_conf_t  *lmcf;
 
-    L = luaL_newstate();
-    if (L == NULL) {
+    lmcf = ngx_http_cycle_get_module_main_conf(cycle, ngx_http_lua_module);
+    if (lmcf == NULL || lmcf->locations == NULL) {
+        return NGX_OK;
+    }
+
+    lmcf->lua = luaL_newstate();
+    if (lmcf->lua == NULL) {
         ngx_log_error(NGX_LOG_EMERG, cycle->log, 0, "luaL_newstate() failed");
         return NGX_ERROR;
     }
 
-    lua_close(L);
+    luaL_openlibs(lmcf->lua);
+
+    if (ngx_http_lua_init_content_handlers(cycle, lmcf) != NGX_OK) {
+        lua_close(lmcf->lua);
+        lmcf->lua = NULL;
+        return NGX_ERROR;
+    }
 
     return NGX_OK;
+}
+
+
+static void
+ngx_http_lua_exit_process(ngx_cycle_t *cycle)
+{
+    ngx_http_lua_main_conf_t  *lmcf;
+
+    lmcf = ngx_http_cycle_get_module_main_conf(cycle, ngx_http_lua_module);
+    if (lmcf == NULL || lmcf->lua == NULL) {
+        return;
+    }
+
+    lua_close(lmcf->lua);
+    lmcf->lua = NULL;
 }
 
 
@@ -102,8 +163,10 @@ static char *
 ngx_http_lua_content(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 {
     ngx_http_core_loc_conf_t  *clcf;
+    ngx_http_lua_main_conf_t  *lmcf;
     ngx_http_lua_loc_conf_t   *llcf = conf;
     ngx_str_t                 *value;
+    ngx_http_lua_loc_conf_t  **location;
 
     if (llcf->content.data != NULL) {
         return "is duplicate";
@@ -111,6 +174,27 @@ ngx_http_lua_content(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 
     value = cf->args->elts;
     llcf->content = value[1];
+
+    if (ngx_conf_full_name(cf->cycle, &llcf->content, 0) != NGX_OK) {
+        return NGX_CONF_ERROR;
+    }
+
+    lmcf = ngx_http_conf_get_module_main_conf(cf, ngx_http_lua_module);
+
+    if (lmcf->locations == NULL) {
+        lmcf->locations = ngx_array_create(cf->pool, 4,
+                                           sizeof(ngx_http_lua_loc_conf_t *));
+        if (lmcf->locations == NULL) {
+            return NGX_CONF_ERROR;
+        }
+    }
+
+    location = ngx_array_push(lmcf->locations);
+    if (location == NULL) {
+        return NGX_CONF_ERROR;
+    }
+
+    *location = llcf;
 
     clcf = ngx_http_conf_get_module_loc_conf(cf, ngx_http_core_module);
     clcf->handler = ngx_http_lua_handler;
@@ -120,11 +204,142 @@ ngx_http_lua_content(ngx_conf_t *cf, ngx_command_t *cmd, void *conf)
 
 
 static ngx_int_t
+ngx_http_lua_init_content_handlers(ngx_cycle_t *cycle,
+    ngx_http_lua_main_conf_t *lmcf)
+{
+    ngx_uint_t                 i;
+    ngx_http_lua_loc_conf_t  **llcf;
+
+    llcf = lmcf->locations->elts;
+
+    for (i = 0; i < lmcf->locations->nelts; i++) {
+        if (ngx_http_lua_init_content_handler(cycle, lmcf, llcf[i])
+            != NGX_OK)
+        {
+            return NGX_ERROR;
+        }
+    }
+
+    return NGX_OK;
+}
+
+
+static ngx_int_t
+ngx_http_lua_init_content_handler(ngx_cycle_t *cycle,
+    ngx_http_lua_main_conf_t *lmcf, ngx_http_lua_loc_conf_t *llcf)
+{
+    lua_State   *L;
+    const char  *error;
+    char        *filename;
+
+    L = lmcf->lua;
+
+    filename = ngx_pnalloc(cycle->pool, llcf->content.len + 1);
+    if (filename == NULL) {
+        return NGX_ERROR;
+    }
+
+    ngx_memcpy(filename, llcf->content.data, llcf->content.len);
+    filename[llcf->content.len] = '\0';
+
+    if (luaL_loadfile(L, filename) != LUA_OK) {
+        error = lua_tostring(L, -1);
+        ngx_log_error(NGX_LOG_EMERG, cycle->log, 0,
+                      "luaL_loadfile(\"%V\") failed: %s",
+                      &llcf->content, error ? error : "unknown error");
+        lua_pop(L, 1);
+        return NGX_ERROR;
+    }
+
+    if (lua_pcall(L, 0, 1, 0) != LUA_OK) {
+        error = lua_tostring(L, -1);
+        ngx_log_error(NGX_LOG_EMERG, cycle->log, 0,
+                      "lua file \"%V\" failed: %s",
+                      &llcf->content, error ? error : "unknown error");
+        lua_pop(L, 1);
+        return NGX_ERROR;
+    }
+
+    if (lua_istable(L, -1)) {
+        lua_getfield(L, -1, "handler");
+        lua_remove(L, -2);
+    }
+
+    if (!lua_isfunction(L, -1)) {
+        ngx_log_error(NGX_LOG_EMERG, cycle->log, 0,
+                      "lua file \"%V\" must return a function or a table "
+                      "with a handler function", &llcf->content);
+        lua_pop(L, 1);
+        return NGX_ERROR;
+    }
+
+    llcf->handler_ref = luaL_ref(L, LUA_REGISTRYINDEX);
+
+    return NGX_OK;
+}
+
+
+static ngx_int_t
+ngx_http_lua_run_handler(ngx_http_request_t *r,
+    ngx_http_lua_main_conf_t *lmcf, ngx_http_lua_loc_conf_t *llcf)
+{
+    int         nres;
+    int         status;
+    lua_State  *co;
+    lua_State  *L;
+
+    L = lmcf->lua;
+
+    co = lua_newthread(L);
+    if (co == NULL) {
+        return NGX_HTTP_INTERNAL_SERVER_ERROR;
+    }
+
+    lua_rawgeti(L, LUA_REGISTRYINDEX, llcf->handler_ref);
+    lua_xmove(L, co, 1);
+
+    lua_pushnil(co);
+
+    status = lua_resume(co, L, 1, &nres);
+
+    if (status != LUA_OK) {
+        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+                      "lua handler \"%V\" failed: %s",
+                      &llcf->content, lua_tostring(co, -1));
+        lua_pop(co, 1);
+        lua_pop(L, 1);
+        return NGX_HTTP_INTERNAL_SERVER_ERROR;
+    }
+
+    lua_settop(co, 0);
+    lua_pop(L, 1);
+
+    return NGX_OK;
+}
+
+
+static ngx_int_t
 ngx_http_lua_handler(ngx_http_request_t *r)
 {
-    ngx_int_t  rc;
+    ngx_int_t                  rc;
+    ngx_http_lua_main_conf_t  *lmcf;
+    ngx_http_lua_loc_conf_t   *llcf;
 
     rc = ngx_http_discard_request_body(r);
+    if (rc != NGX_OK) {
+        return rc;
+    }
+
+    lmcf = ngx_http_get_module_main_conf(r, ngx_http_lua_module);
+    llcf = ngx_http_get_module_loc_conf(r, ngx_http_lua_module);
+
+    if (lmcf == NULL || lmcf->lua == NULL || llcf == NULL
+        || llcf->handler_ref == LUA_NOREF)
+    {
+        return NGX_HTTP_INTERNAL_SERVER_ERROR;
+    }
+
+    rc = ngx_http_lua_run_handler(r, lmcf, llcf);
     if (rc != NGX_OK) {
         return rc;
     }

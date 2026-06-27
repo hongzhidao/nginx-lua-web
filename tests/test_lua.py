@@ -7,6 +7,7 @@ from urllib.request import urlopen
 
 
 TEST_URL = os.environ.get("TEST_URL", "http://127.0.0.1:18080/hello")
+TEST_MARKER = os.environ.get("TEST_MARKER")
 
 
 def request_status():
@@ -31,8 +32,15 @@ def main():
 
     if status == 404:
         print("GET /hello returns 404")
-        print("OK")
-        return 0
+
+        if TEST_MARKER is not None and os.path.exists(TEST_MARKER):
+            print("Lua handler ran")
+            print("OK")
+            return 0
+
+        print(f"Lua handler marker not found: {TEST_MARKER}")
+        print("FAIL")
+        return 1
 
     print(f"GET /hello expected 404, got {status}")
     print("FAIL")

@@ -36,6 +36,9 @@ find_nginx
 
 mkdir -p "$PREFIX/conf" "$PREFIX/logs" "$PREFIX/app"
 
+TEST_MARKER="$PREFIX/logs/lua-handler-ran"
+export TEST_MARKER
+
 sed "s/127.0.0.1:18080/127.0.0.1:$PORT/" \
     "$ROOT/tests/fixtures/nginx.conf" > "$PREFIX/conf/nginx.conf"
 cp "$ROOT/tests/fixtures/app/hello.lua" "$PREFIX/app/hello.lua"
@@ -44,7 +47,9 @@ cp "$ROOT/tests/fixtures/app/hello.lua" "$PREFIX/app/hello.lua"
 nginx_pid=$!
 trap cleanup EXIT
 
-if ! TEST_URL="http://127.0.0.1:$PORT/hello" python3 "$ROOT/tests/test_lua.py"; then
+if ! TEST_URL="http://127.0.0.1:$PORT/hello" \
+    python3 "$ROOT/tests/test_lua.py"
+then
     [ -f "$PREFIX/logs/error.log" ] &&
         sed -n '1,160p' "$PREFIX/logs/error.log" >&2
     exit 1
