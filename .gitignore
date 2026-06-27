@@ -1,0 +1,13 @@
+*.a
+*.d
+*.dll
+*.dylib
+*.exe
+*.o
+*.so
+
+objs/
+build/
+
+lua-5.5.0/src/lua
+lua-5.5.0/src/luac
