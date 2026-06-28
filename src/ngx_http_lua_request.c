@@ -14,6 +14,8 @@
 #include "ngx_http_lua.h"
 
 
+static ngx_lua_web_stream_source_t *ngx_http_lua_request_body_source_create(
+    lua_State *L, ngx_http_request_t *r);
 static ngx_int_t ngx_http_lua_request_body_source_start(
     lua_State *L, ngx_lua_web_stream_t *stream, void *data);
 static ngx_int_t ngx_http_lua_request_body_source_pull(
@@ -23,7 +25,51 @@ static ngx_uint_t ngx_http_lua_request_body_source_enqueue(
     ngx_http_request_t *r, ngx_lua_web_stream_t *stream);
 
 
-ngx_lua_web_stream_source_t *
+ngx_int_t
+ngx_http_lua_request_push(lua_State *L, ngx_http_request_t *r)
+{
+    ngx_int_t                    rc;
+    ngx_http_lua_ctx_t          *ctx;
+    ngx_lua_web_stream_source_t *body_source;
+    ngx_lua_web_stream_t        *body;
+
+    if (L == NULL || r == NULL) {
+        return NGX_ERROR;
+    }
+
+    ctx = ngx_http_get_module_ctx(r, ngx_http_lua_module);
+    if (ctx == NULL) {
+        return NGX_ERROR;
+    }
+
+    body = ngx_lua_web_stream_create(L);
+    if (body == NULL) {
+        return NGX_ERROR;
+    }
+
+    body_source = ngx_http_lua_request_body_source_create(L, r);
+    if (body_source == NULL) {
+        return NGX_ERROR;
+    }
+
+    if (ngx_lua_web_stream_set_source(body, body_source) != NGX_OK) {
+        return NGX_ERROR;
+    }
+
+    ctx->request_body = body;
+
+    rc = ngx_lua_web_stream_start_source(L, body);
+    if (rc != NGX_OK) {
+        return NGX_ERROR;
+    }
+
+    ngx_lua_web_stream_push(L, body);
+
+    return NGX_OK;
+}
+
+
+static ngx_lua_web_stream_source_t *
 ngx_http_lua_request_body_source_create(lua_State *L, ngx_http_request_t *r)
 {
     ngx_lua_ctx_t                *ctx;

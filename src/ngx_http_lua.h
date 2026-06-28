@@ -28,8 +28,8 @@ typedef struct {
 } ngx_http_lua_ctx_t;
 
 
-ngx_lua_web_stream_source_t *ngx_http_lua_request_body_source_create(
-    lua_State *L, ngx_http_request_t *r);
+ngx_int_t ngx_http_lua_request_push(lua_State *L, ngx_http_request_t *r);
+ngx_int_t ngx_http_lua_response_send(ngx_http_request_t *r);
 
 
 extern ngx_module_t  ngx_http_lua_module;
