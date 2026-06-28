@@ -62,5 +62,18 @@ return {
         file:write("\n")
         file:write(table.concat(stream_chunks))
         file:close()
+
+        local response = Stream.new({
+            start = function(controller)
+                controller:enqueue("hello ")
+            end,
+
+            pull = function(controller)
+                controller:enqueue("world")
+                controller:close()
+            end
+        })
+
+        return response
     end
 }

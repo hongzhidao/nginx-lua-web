@@ -43,8 +43,13 @@ static ngx_int_t ngx_http_lua_init_content_handler(ngx_cycle_t *cycle,
     ngx_http_lua_main_conf_t *lmcf, ngx_http_lua_loc_conf_t *llcf);
 static void ngx_http_lua_cleanup(void *data);
 static void ngx_http_lua_body_handler(ngx_http_request_t *r);
-static void ngx_http_lua_wake_handler(ngx_lua_web_stream_t *stream,
+static void ngx_http_lua_content_continue(ngx_lua_web_stream_t *stream,
     void *data);
+static void ngx_http_lua_response_continue(ngx_lua_web_stream_t *stream,
+    void *data);
+static void ngx_http_lua_response_write_handler(ngx_http_request_t *r);
+static ngx_int_t ngx_http_lua_response_output(ngx_http_request_t *r);
+static ngx_int_t ngx_http_lua_response_wait_writable(ngx_http_request_t *r);
 static ngx_int_t ngx_http_lua_content_handler(ngx_http_request_t *r,
     ngx_uint_t narg);
 static ngx_int_t ngx_http_lua_send_response(ngx_http_request_t *r);
@@ -294,9 +299,14 @@ ngx_http_lua_cleanup(void *data)
 {
     ngx_http_lua_ctx_t  *ctx = data;
 
-    if (ctx->state != NULL && ctx->stream_ref != LUA_NOREF) {
-        luaL_unref(ctx->state, LUA_REGISTRYINDEX, ctx->stream_ref);
-        ctx->stream_ref = LUA_NOREF;
+    if (ctx->state != NULL && ctx->request_stream_ref != LUA_NOREF) {
+        luaL_unref(ctx->state, LUA_REGISTRYINDEX, ctx->request_stream_ref);
+        ctx->request_stream_ref = LUA_NOREF;
+    }
+
+    if (ctx->state != NULL && ctx->response_stream_ref != LUA_NOREF) {
+        luaL_unref(ctx->state, LUA_REGISTRYINDEX, ctx->response_stream_ref);
+        ctx->response_stream_ref = LUA_NOREF;
     }
 
     if (ctx->state != NULL && ctx->coroutine_ref != LUA_NOREF) {
@@ -380,7 +390,7 @@ ngx_http_lua_body_handler(ngx_http_request_t *r)
 
 
 static void
-ngx_http_lua_wake_handler(ngx_lua_web_stream_t *stream, void *data)
+ngx_http_lua_content_continue(ngx_lua_web_stream_t *stream, void *data)
 {
     ngx_http_request_t  *r = data;
     ngx_http_lua_ctx_t  *ctx;
@@ -390,9 +400,9 @@ ngx_http_lua_wake_handler(ngx_lua_web_stream_t *stream, void *data)
 
     ctx = ngx_http_get_module_ctx(r, ngx_http_lua_module);
 
-    if (ctx->stream_ref != LUA_NOREF) {
-        luaL_unref(ctx->state, LUA_REGISTRYINDEX, ctx->stream_ref);
-        ctx->stream_ref = LUA_NOREF;
+    if (ctx->request_stream_ref != LUA_NOREF) {
+        luaL_unref(ctx->state, LUA_REGISTRYINDEX, ctx->request_stream_ref);
+        ctx->request_stream_ref = LUA_NOREF;
     }
 
     rc = ngx_http_lua_content_handler(r, 0);
@@ -405,6 +415,141 @@ ngx_http_lua_wake_handler(ngx_lua_web_stream_t *stream, void *data)
 }
 
 
+static void
+ngx_http_lua_response_continue(ngx_lua_web_stream_t *stream, void *data)
+{
+    ngx_http_request_t  *r = data;
+    ngx_int_t            rc;
+
+    (void) stream;
+
+    rc = ngx_http_lua_response_output(r);
+
+    if (rc == NGX_AGAIN) {
+        return;
+    }
+
+    ngx_http_finalize_request(r, rc);
+}
+
+
+static void
+ngx_http_lua_response_write_handler(ngx_http_request_t *r)
+{
+    ngx_int_t            rc;
+    ngx_connection_t    *c;
+    ngx_event_t         *wev;
+
+    c = r->connection;
+    wev = c->write;
+
+    if (wev->timedout) {
+        c->timedout = 1;
+        ngx_http_finalize_request(r, NGX_HTTP_REQUEST_TIME_OUT);
+        return;
+    }
+
+    if (wev->delayed || r->aio) {
+        if (ngx_http_lua_response_wait_writable(r) != NGX_OK) {
+            ngx_http_finalize_request(r, NGX_ERROR);
+        }
+
+        return;
+    }
+
+    rc = ngx_http_output_filter(r, NULL);
+    if (rc == NGX_ERROR) {
+        ngx_http_finalize_request(r, NGX_ERROR);
+        return;
+    }
+
+    if (r->buffered || r->postponed || c->buffered) {
+        if (ngx_http_lua_response_wait_writable(r) != NGX_OK) {
+            ngx_http_finalize_request(r, NGX_ERROR);
+        }
+
+        return;
+    }
+
+    rc = ngx_http_lua_response_output(r);
+
+    if (rc == NGX_AGAIN) {
+        return;
+    }
+
+    ngx_http_finalize_request(r, rc);
+}
+
+
+static ngx_int_t
+ngx_http_lua_response_output(ngx_http_request_t *r)
+{
+    ngx_chain_t          *out;
+    ngx_int_t            rc;
+    ngx_connection_t    *c;
+    ngx_http_lua_ctx_t  *ctx;
+
+    c = r->connection;
+    ctx = ngx_http_get_module_ctx(r, ngx_http_lua_module);
+
+    for ( ;; ) {
+        if (r->buffered || r->postponed || c->buffered) {
+            return ngx_http_lua_response_wait_writable(r);
+        }
+
+        rc = ngx_lua_web_stream_take_chain(ctx->coroutine, ctx->response_body,
+                                           &out);
+
+        if (rc == NGX_OK) {
+            rc = ngx_http_output_filter(r, out);
+            if (rc == NGX_ERROR) {
+                return NGX_ERROR;
+            }
+
+            continue;
+        }
+
+        if (rc == NGX_DONE) {
+            rc = ngx_http_send_special(r, NGX_HTTP_LAST);
+            if (rc == NGX_AGAIN) {
+                return ngx_http_lua_response_wait_writable(r);
+            }
+
+            return rc;
+        }
+
+        if (rc == NGX_AGAIN) {
+            ngx_lua_web_stream_set_wake(ctx->response_body,
+                                        ngx_http_lua_response_continue, r);
+            return NGX_AGAIN;
+        }
+
+        return rc;
+    }
+}
+
+
+static ngx_int_t
+ngx_http_lua_response_wait_writable(ngx_http_request_t *r)
+{
+    ngx_event_t               *wev;
+    ngx_http_core_loc_conf_t  *clcf;
+
+    wev = r->connection->write;
+    clcf = ngx_http_get_module_loc_conf(r, ngx_http_core_module);
+
+    if (!wev->delayed && !wev->timer_set) {
+        ngx_add_timer(wev, clcf->send_timeout);
+    }
+
+    if (ngx_handle_write_event(wev, clcf->send_lowat) != NGX_OK) {
+        return NGX_ERROR;
+    }
+
+    return NGX_AGAIN;
+}
+
+
 static ngx_int_t
 ngx_http_lua_content_handler(ngx_http_request_t *r, ngx_uint_t narg)
 {
@@ -412,6 +557,7 @@ ngx_http_lua_content_handler(ngx_http_request_t *r, ngx_uint_t narg)
     int                    status;
     ngx_http_lua_ctx_t    *ctx;
     ngx_lua_web_stream_t  *stream;
+    ngx_lua_web_stream_t  *response;
 
     ctx = ngx_http_get_module_ctx(r, ngx_http_lua_module);
 
@@ -428,9 +574,11 @@ ngx_http_lua_content_handler(ngx_http_request_t *r, ngx_uint_t narg)
             }
 
             lua_pushvalue(ctx->coroutine, -1);
-            ctx->stream_ref = luaL_ref(ctx->coroutine, LUA_REGISTRYINDEX);
+            ctx->request_stream_ref = luaL_ref(ctx->coroutine,
+                                               LUA_REGISTRYINDEX);
 
-            ngx_lua_web_stream_set_wake(stream, ngx_http_lua_wake_handler, r);
+            ngx_lua_web_stream_set_wake(stream,
+                                        ngx_http_lua_content_continue, r);
             lua_pop(ctx->coroutine, nres);
 
             return NGX_AGAIN;
@@ -443,6 +591,18 @@ ngx_http_lua_content_handler(ngx_http_request_t *r, ngx_uint_t narg)
         return NGX_ERROR;
     }
 
+    response = nres == 1 ? ngx_lua_web_stream_get(ctx->coroutine, -1)
+                         : NULL;
+
+    if (response == NULL) {
+        lua_settop(ctx->coroutine, 0);
+        return NGX_HTTP_NOT_FOUND;
+    }
+
+    lua_pushvalue(ctx->coroutine, -1);
+    ctx->response_stream_ref = luaL_ref(ctx->coroutine, LUA_REGISTRYINDEX);
+    ctx->response_body = response;
+
     lua_settop(ctx->coroutine, 0);
 
     return ngx_http_lua_send_response(r);
@@ -452,13 +612,11 @@ ngx_http_lua_content_handler(ngx_http_request_t *r, ngx_uint_t narg)
 static ngx_int_t
 ngx_http_lua_send_response(ngx_http_request_t *r)
 {
-    ngx_buf_t    *b;
-    ngx_chain_t   out;
-    ngx_int_t     rc;
-    static u_char body[] = "hello world";
+    ngx_int_t  rc;
 
+    r->write_event_handler = ngx_http_lua_response_write_handler;
     r->headers_out.status = NGX_HTTP_OK;
-    r->headers_out.content_length_n = sizeof(body) - 1;
+    r->headers_out.content_length_n = -1;
     ngx_str_set(&r->headers_out.content_type, "text/plain");
 
     rc = ngx_http_send_header(r);
@@ -466,20 +624,7 @@ ngx_http_lua_send_response(ngx_http_request_t *r)
         return rc;
     }
 
-    b = ngx_calloc_buf(r->pool);
-    if (b == NULL) {
-        return NGX_HTTP_INTERNAL_SERVER_ERROR;
-    }
-
-    b->pos = body;
-    b->last = body + sizeof(body) - 1;
-    b->memory = 1;
-    b->last_buf = 1;
-
-    out.buf = b;
-    out.next = NULL;
-
-    return ngx_http_output_filter(r, &out);
+    return ngx_http_lua_response_output(r);
 }
 
 
@@ -492,6 +637,10 @@ ngx_http_lua_handler(ngx_http_request_t *r)
     ngx_http_lua_main_conf_t  *lmcf;
     ngx_http_lua_loc_conf_t   *llcf;
     ngx_lua_ctx_t             *lua_ctx;
+
+    if (r != r->main) {
+        return NGX_HTTP_NOT_ALLOWED;
+    }
 
     lmcf = ngx_http_get_module_main_conf(r, ngx_http_lua_module);
     llcf = ngx_http_get_module_loc_conf(r, ngx_http_lua_module);
@@ -508,7 +657,8 @@ ngx_http_lua_handler(ngx_http_request_t *r)
     }
 
     ctx->coroutine_ref = LUA_NOREF;
-    ctx->stream_ref = LUA_NOREF;
+    ctx->request_stream_ref = LUA_NOREF;
+    ctx->response_stream_ref = LUA_NOREF;
 
     lua_ctx = ngx_lua_ctx_create(r->connection->log);
     if (lua_ctx == NULL) {

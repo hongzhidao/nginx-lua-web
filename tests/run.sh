@@ -42,6 +42,7 @@ export TEST_MARKER
 sed "s/127.0.0.1:18080/127.0.0.1:$PORT/" \
     "$ROOT/tests/fixtures/nginx.conf" > "$PREFIX/conf/nginx.conf"
 cp "$ROOT/tests/fixtures/app/hello.lua" "$PREFIX/app/hello.lua"
+cp "$ROOT/tests/fixtures/app/missing.lua" "$PREFIX/app/missing.lua"
 
 "$NGINX" -p "$PREFIX/" -c conf/nginx.conf &
 nginx_pid=$!

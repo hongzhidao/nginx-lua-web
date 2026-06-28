@@ -59,8 +59,10 @@ static void ngx_lua_web_stream_push_controller(lua_State *L,
 static int ngx_lua_web_stream_controller_enqueue_method(lua_State *L);
 static int ngx_lua_web_stream_controller_close_method(lua_State *L);
 static int ngx_lua_web_stream_gc(lua_State *L);
-static int ngx_lua_web_stream_read_method(lua_State *L);
-static int ngx_lua_web_stream_read_continue(lua_State *L, int status,
+static ngx_int_t ngx_lua_web_stream_push_chunk(lua_State *L,
+    ngx_lua_web_stream_t *stream);
+static int ngx_lua_web_stream_reader_read_method(lua_State *L);
+static int ngx_lua_web_stream_reader_read_resume(lua_State *L, int status,
     lua_KContext ctx);
 static int ngx_lua_web_stream_get_reader_method(lua_State *L);
 static ngx_lua_web_stream_t *ngx_lua_web_stream_check(lua_State *L, int index);
@@ -382,15 +384,17 @@ ngx_lua_web_stream_pull_source(lua_State *L, ngx_lua_web_stream_t *stream)
 
 
 ngx_int_t
-ngx_lua_web_stream_read(lua_State *L, ngx_lua_web_stream_t *stream)
+ngx_lua_web_stream_take_chain(lua_State *L, ngx_lua_web_stream_t *stream,
+    ngx_chain_t **out)
 {
-    ngx_buf_t    *b;
     ngx_chain_t  *in;
     ngx_int_t     rc;
 
-    if (stream == NULL) {
+    if (stream == NULL || out == NULL) {
         return NGX_ERROR;
     }
+
+    *out = NULL;
 
     for ( ;; ) {
         in = stream->in;
@@ -402,21 +406,18 @@ ngx_lua_web_stream_read(lua_State *L, ngx_lua_web_stream_t *stream)
             }
 
             in->next = NULL;
-            b = in->buf;
 
-            if (b == NULL || b->pos == b->last) {
+            if (in->buf == NULL || in->buf->pos == in->buf->last) {
                 continue;
             }
 
-            lua_pushlstring(L, (char *) b->pos, b->last - b->pos);
-            b->pos = b->last;
+            *out = in;
 
             return NGX_OK;
         }
 
         if (stream->closed) {
-            lua_pushnil(L);
-            return NGX_OK;
+            return NGX_DONE;
         }
 
         rc = ngx_lua_web_stream_pull_source(L, stream);
@@ -424,6 +425,33 @@ ngx_lua_web_stream_read(lua_State *L, ngx_lua_web_stream_t *stream)
             return rc;
         }
     }
+}
+
+
+static ngx_int_t
+ngx_lua_web_stream_push_chunk(lua_State *L, ngx_lua_web_stream_t *stream)
+{
+    ngx_buf_t    *b;
+    ngx_chain_t  *in;
+    ngx_int_t     rc;
+
+    rc = ngx_lua_web_stream_take_chain(L, stream, &in);
+
+    if (rc == NGX_OK) {
+        b = in->buf;
+
+        lua_pushlstring(L, (char *) b->pos, b->last - b->pos);
+        b->pos = b->last;
+
+        return NGX_OK;
+    }
+
+    if (rc == NGX_DONE) {
+        lua_pushnil(L);
+        return NGX_OK;
+    }
+
+    return rc;
 }
 
 
@@ -525,14 +553,14 @@ ngx_lua_web_stream_gc(lua_State *L)
 
 
 static int
-ngx_lua_web_stream_read_method(lua_State *L)
+ngx_lua_web_stream_reader_read_method(lua_State *L)
 {
     ngx_int_t              rc;
     ngx_lua_web_stream_t  *stream;
 
     stream = ngx_lua_web_stream_check(L, 1);
 
-    rc = ngx_lua_web_stream_read(L, stream);
+    rc = ngx_lua_web_stream_push_chunk(L, stream);
 
     if (rc == NGX_OK) {
         return 1;
@@ -541,7 +569,8 @@ ngx_lua_web_stream_read_method(lua_State *L)
     if (rc == NGX_AGAIN) {
         lua_pushvalue(L, 1);
 
-        return lua_yieldk(L, 1, 0, ngx_lua_web_stream_read_continue);
+        return lua_yieldk(L, 1, 0,
+                          ngx_lua_web_stream_reader_read_resume);
     }
 
     return luaL_error(L, "stream read failed");
@@ -549,7 +578,7 @@ ngx_lua_web_stream_read_method(lua_State *L)
 
 
 static int
-ngx_lua_web_stream_read_continue(lua_State *L, int status,
+ngx_lua_web_stream_reader_read_resume(lua_State *L, int status,
     lua_KContext opaque)
 {
     ngx_int_t              rc;
@@ -560,7 +589,7 @@ ngx_lua_web_stream_read_continue(lua_State *L, int status,
 
     stream = ngx_lua_web_stream_check(L, 1);
 
-    rc = ngx_lua_web_stream_read(L, stream);
+    rc = ngx_lua_web_stream_push_chunk(L, stream);
 
     if (rc == NGX_OK) {
         return 1;
@@ -569,7 +598,8 @@ ngx_lua_web_stream_read_continue(lua_State *L, int status,
     if (rc == NGX_AGAIN) {
         lua_pushvalue(L, 1);
 
-        return lua_yieldk(L, 1, 0, ngx_lua_web_stream_read_continue);
+        return lua_yieldk(L, 1, 0,
+                          ngx_lua_web_stream_reader_read_resume);
     }
 
     return luaL_error(L, "stream read failed");
@@ -642,7 +672,7 @@ ngx_lua_web_stream_register_metatable(lua_State *L)
         lua_newtable(L);
 
         lua_pushliteral(L, "read");
-        lua_pushcfunction(L, ngx_lua_web_stream_read_method);
+        lua_pushcfunction(L, ngx_lua_web_stream_reader_read_method);
         lua_rawset(L, -3);
 
         lua_pushliteral(L, "getReader");

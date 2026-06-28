@@ -11,9 +11,8 @@ enough to read in one sitting.
 Today it is deliberately minimal. The module registers a `lua_content`
 directive, links nginx against the embedded Lua source in `lua-5.5.0/`, loads
 the configured Lua file during worker startup, and runs its handler in a fresh
-Lua coroutine for each request. The HTTP response is still fixed at
-`hello world`; this keeps the first Lua integration step focused on loading and
-executing Lua code before the request and response APIs are added.
+Lua coroutine for each request. A handler can read the request body as a stream
+and must return a `Stream`; non-stream results are treated as `404 Not Found`.
 
 Example configuration:
 
@@ -27,8 +26,13 @@ Example Lua file:
 
 ```lua
 return {
-    handler = function(r)
-        -- Request and response APIs are not implemented yet.
+    handler = function(body)
+        return Stream.new({
+            start = function(controller)
+                controller:enqueue("hello world")
+                controller:close()
+            end
+        })
     end
 }
 ```
@@ -74,8 +78,9 @@ make test
 ```
 
 It starts `../nginx/objs/nginx`, sends a request to a location configured with
-`lua_content`, verifies that the response is `200 hello world`, and checks that
-the Lua handler ran.
+`lua_content`, verifies that a Lua stream is written as the response, checks
+that request bodies stream into Lua, and verifies that non-stream handler
+results return 404.
 
 Build Nginx first if `../nginx/objs/nginx` does not exist. You can override the
 binary path:
@@ -94,11 +99,13 @@ Implemented:
 - `lua_content` location directive.
 - Loading Lua files during worker startup.
 - Per-request Lua coroutine execution.
-- Location content handler that runs Lua and then returns `hello world`.
+- Client request body streams consumable from Lua.
+- Lua `Stream.new` producer with `start` and synchronous `pull`.
+- Location content handler that writes returned streams to the HTTP response.
+- Non-stream handler results return 404.
 - Python runtime acceptance test.
 
 Not implemented yet:
 
 - Request and response objects.
-- Lua-driven HTTP responses.
 - Fetch-style APIs and streaming bodies.

@@ -44,7 +44,8 @@ ngx_int_t ngx_lua_web_stream_start_source(lua_State *L,
     ngx_lua_web_stream_t *stream);
 ngx_int_t ngx_lua_web_stream_pull_source(lua_State *L,
     ngx_lua_web_stream_t *stream);
-ngx_int_t ngx_lua_web_stream_read(lua_State *L, ngx_lua_web_stream_t *stream);
+ngx_int_t ngx_lua_web_stream_take_chain(lua_State *L,
+    ngx_lua_web_stream_t *stream, ngx_chain_t **out);
 void ngx_lua_web_stream_set_wake(ngx_lua_web_stream_t *stream,
     ngx_lua_web_stream_wake_pt wake, void *data);
 void ngx_lua_web_stream_wake(ngx_lua_web_stream_t *stream);
