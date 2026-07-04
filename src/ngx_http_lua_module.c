@@ -523,12 +523,12 @@ ngx_http_lua_create_main_conf(ngx_conf_t *cf)
     ngx_lua_set_ctx(conf->lua, NULL);
 
     ngx_lua_disable_coroutine(conf->lua);
-    ngx_lua_app_register(conf->lua);
-    ngx_lua_web_stream_register(conf->lua);
-    ngx_lua_web_headers_register(conf->lua);
     ngx_lua_web_request_register(conf->lua);
-    ngx_http_lua_fetch_register(conf->lua);
     ngx_lua_web_response_register(conf->lua);
+    ngx_lua_web_headers_register(conf->lua);
+    ngx_lua_web_stream_register(conf->lua);
+    ngx_http_lua_fetch_register(conf->lua);
+    ngx_lua_app_register(conf->lua);
 
     cln->handler = ngx_http_lua_cleanup_vm;
     cln->data = conf;

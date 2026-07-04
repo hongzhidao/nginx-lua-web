@@ -30,14 +30,14 @@ typedef struct {
 extern ngx_module_t  ngx_http_lua_module;
 
 
-void ngx_http_lua_fetch_register(lua_State *L);
+ngx_lua_web_request_t *ngx_http_lua_request_create(ngx_http_request_t *r,
+    ngx_http_lua_ctx_t *ctx);
 void ngx_http_lua_set_request(lua_State *L, ngx_http_request_t *r);
 ngx_http_request_t *ngx_http_lua_get_request(lua_State *L);
 void ngx_http_lua_clear_request(lua_State *L);
 ngx_int_t ngx_http_lua_send_response(ngx_http_request_t *r,
     ngx_lua_web_response_t *response);
-ngx_lua_web_request_t *ngx_http_lua_request_create(ngx_http_request_t *r,
-    ngx_http_lua_ctx_t *ctx);
+void ngx_http_lua_fetch_register(lua_State *L);
 
 
 #endif /* _NGX_HTTP_LUA_H_INCLUDED_ */

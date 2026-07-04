@@ -38,120 +38,6 @@ mkdir -p "$TEST_ROOT/conf" "$TEST_ROOT/logs" "$TEST_ROOT/client_body_temp"
 mkdir -p "$TEST_ROOT/proxy_temp" "$TEST_ROOT/fastcgi_temp"
 mkdir -p "$TEST_ROOT/uwsgi_temp" "$TEST_ROOT/scgi_temp"
 
-cat > "$TEST_ROOT/app.lua" <<'EOF'
-local function text_stream(text)
-    return ReadableStream.new({
-        start = function(controller)
-            controller:enqueue(text)
-            controller:close()
-        end,
-    })
-end
-
-local app = App.new()
-app:all("*", function()
-    return Response.new({
-        status = 201,
-        headers = {
-            ["Content-Type"] = "text/plain",
-            ["X-Test"] = "one",
-        },
-        body = text_stream("hello from lua handler"),
-    })
-end)
-return app
-EOF
-
-cat > "$TEST_ROOT/app-alt.lua" <<'EOF'
-local function text_stream(text)
-    return ReadableStream.new({
-        start = function(controller)
-            controller:enqueue(text)
-            controller:close()
-        end,
-    })
-end
-
-local app = App.new()
-app:all("/lua-alt", function()
-    return Response.new({
-        status = 202,
-        body = text_stream("hello from second lua handler"),
-    })
-end)
-return app
-EOF
-
-cat > "$TEST_ROOT/app-args.lua" <<'EOF'
-local function text_stream(text)
-    return ReadableStream.new({
-        start = function(controller)
-            controller:enqueue(text)
-            controller:close()
-        end,
-    })
-end
-
-local ok = pcall(function()
-    App.new("bad")
-end)
-
-local app = App.new()
-
-app:all("*", function()
-    if ok then
-        return Response.new({
-            status = 500,
-            body = text_stream("App.new accepted an argument"),
-        })
-    end
-
-    return Response.new({
-        status = 203,
-        body = text_stream("App.new rejected arguments"),
-    })
-end)
-
-return app
-EOF
-
-cat > "$TEST_ROOT/app-coroutine-disabled.lua" <<'EOF'
-local function text_stream(text)
-    return ReadableStream.new({
-        start = function(controller)
-            controller:enqueue(text)
-            controller:close()
-        end,
-    })
-end
-
-local app = App.new()
-local require_ok = pcall(require, "coroutine")
-
-app:all("*", function()
-    if coroutine ~= nil then
-        return Response.new({
-            status = 500,
-            body = text_stream("coroutine global is available"),
-        })
-    end
-
-    if require_ok then
-        return Response.new({
-            status = 500,
-            body = text_stream("coroutine module is available"),
-        })
-    end
-
-    return Response.new({
-        status = 200,
-        body = text_stream("coroutine disabled"),
-    })
-end)
-
-return app
-EOF
-
 cat > "$TEST_ROOT/app-body.lua" <<'EOF'
 local function text_stream(text)
     return ReadableStream.new({
@@ -214,6 +100,113 @@ end)
 return app
 EOF
 
+cat > "$TEST_ROOT/app-request-new.lua" <<'EOF'
+local function text_stream(text)
+    return ReadableStream.new({
+        start = function(controller)
+            controller:enqueue(text)
+            controller:close()
+        end,
+    })
+end
+
+local app = App.new()
+
+app:all("*", function()
+    local ok, err = pcall(function()
+        local body = ReadableStream.new({
+            start = function(controller)
+                controller:enqueue("request body")
+                controller:close()
+            end,
+        })
+
+        Request.new()
+        Request.new({})
+        Request.new({ headers = { ["X-Test"] = "two" } })
+        Request.new({ url = "https://example.test/path", method = "POST" })
+        Request.new({ method = "POST", body = body })
+        Request.new({
+            url = "https://example.test/body",
+            method = "POST",
+            headers = { ["X-Test"] = "one" },
+            body = body,
+        })
+
+        local empty = Request.new()
+        if empty.url ~= "" then
+            error("default request url mismatch")
+        end
+        if empty.method ~= "GET" then
+            error("default request method mismatch")
+        end
+        if empty.headers == nil then
+            error("default request headers missing")
+        end
+        if empty.body ~= nil then
+            error("default request body should be nil")
+        end
+
+        local with_body = Request.new({
+            url = "https://example.test/body",
+            method = "POST",
+            headers = { ["X-Test"] = "one" },
+            body = body,
+        })
+        if with_body.url ~= "https://example.test/body" then
+            error("request url mismatch")
+        end
+        if with_body.method ~= "POST" then
+            error("request method mismatch")
+        end
+        if with_body.headers == nil then
+            error("request headers missing")
+        end
+        if with_body.body ~= body then
+            error("request body stream mismatch")
+        end
+    end)
+
+    if not ok then
+        return Response.new({
+            status = 500,
+            body = text_stream(err),
+        })
+    end
+
+    return Response.new({
+        status = 200,
+        body = text_stream("Request.new"),
+    })
+end)
+
+return app
+EOF
+
+cat > "$TEST_ROOT/app.lua" <<'EOF'
+local function text_stream(text)
+    return ReadableStream.new({
+        start = function(controller)
+            controller:enqueue(text)
+            controller:close()
+        end,
+    })
+end
+
+local app = App.new()
+app:all("*", function()
+    return Response.new({
+        status = 201,
+        headers = {
+            ["Content-Type"] = "text/plain",
+            ["X-Test"] = "one",
+        },
+        body = text_stream("hello from lua handler"),
+    })
+end)
+return app
+EOF
+
 cat > "$TEST_ROOT/app-body-stream.lua" <<'EOF'
 local app = App.new()
 
@@ -221,6 +214,220 @@ app:all("*", function(request)
     return Response.new({
         status = 200,
         body = request.body,
+    })
+end)
+
+return app
+EOF
+
+cat > "$TEST_ROOT/app-response-new.lua" <<'EOF'
+local function text_stream(text)
+    return ReadableStream.new({
+        start = function(controller)
+            controller:enqueue(text)
+            controller:close()
+        end,
+    })
+end
+
+local app = App.new()
+
+app:all("*", function()
+    local ok, err = pcall(function()
+        local body = ReadableStream.new({
+            start = function(controller)
+                controller:enqueue("response body")
+                controller:close()
+            end,
+        })
+
+        Response.new()
+        Response.new({})
+        Response.new({ headers = { ["X-Test"] = "two" } })
+        Response.new({ status = 201 })
+        Response.new({
+            status = 204,
+            headers = { ["X-Test"] = "one" },
+            body = body,
+        })
+
+        local empty = Response.new()
+        if empty.status ~= 200 then
+            error("default response status mismatch")
+        end
+        if empty.headers == nil then
+            error("default response headers missing")
+        end
+        if empty.body ~= nil then
+            error("default response body should be nil")
+        end
+
+        local with_body = Response.new({
+            status = 202,
+            headers = { ["X-Test"] = "one" },
+            body = body,
+        })
+        if with_body.status ~= 202 then
+            error("response status mismatch")
+        end
+        if with_body.headers == nil then
+            error("response headers missing")
+        end
+        if with_body.body ~= body then
+            error("response body stream mismatch")
+        end
+
+        local bad_status_ok = pcall(function()
+            Response.new({ status = 99 })
+        end)
+        if bad_status_ok then
+            error("Response.new accepted invalid status")
+        end
+
+        local bad_body_ok = pcall(function()
+            Response.new({ body = "bad" })
+        end)
+        if bad_body_ok then
+            error("Response.new accepted invalid body")
+        end
+    end)
+
+    if not ok then
+        return Response.new({
+            status = 500,
+            body = text_stream(err),
+        })
+    end
+
+    return Response.new({
+        status = 200,
+        headers = { ["X-Response-Test"] = "ok" },
+        body = text_stream("Response.new"),
+    })
+end)
+
+return app
+EOF
+
+cat > "$TEST_ROOT/app-headers-new.lua" <<'EOF'
+local function text_stream(text)
+    return ReadableStream.new({
+        start = function(controller)
+            controller:enqueue(text)
+            controller:close()
+        end,
+    })
+end
+
+local app = App.new()
+
+app:all("*", function()
+    local ok, err = pcall(function()
+        local headers = Headers.new({ ["X-Test"] = "one" })
+
+        Headers.new()
+        Headers.new(headers)
+
+        local request = Request.new({ headers = headers })
+        if request.headers == nil then
+            error("request headers missing")
+        end
+        if request.headers == headers then
+            error("request headers were not copied")
+        end
+
+        local response = Response.new({ headers = headers })
+        if response.headers == nil then
+            error("response headers missing")
+        end
+        if response.headers == headers then
+            error("response headers were not copied")
+        end
+    end)
+
+    if not ok then
+        return Response.new({
+            status = 500,
+            body = text_stream(err),
+        })
+    end
+
+    return Response.new({
+        status = 200,
+        body = text_stream("Headers.new"),
+    })
+end)
+
+return app
+EOF
+
+cat > "$TEST_ROOT/app-stream.lua" <<'EOF'
+local function text_stream(text)
+    return ReadableStream.new({
+        start = function(controller)
+            controller:enqueue(text)
+            controller:close()
+        end,
+    })
+end
+
+local app = App.new()
+
+app:all("*", function()
+    if Stream ~= nil then
+        return Response.new({
+            status = 500,
+            body = text_stream("Stream global is exposed"),
+        })
+    end
+
+    local stream = ReadableStream.new({
+        start = function(controller)
+            controller:enqueue("hello ")
+            controller:enqueue("from lua stream")
+            controller:close()
+        end,
+    })
+
+    if stream.enqueue ~= nil then
+        return Response.new({
+            status = 500,
+            body = text_stream("ReadableStream exposes enqueue"),
+        })
+    end
+
+    return Response.new({
+        status = 200,
+        body = stream,
+    })
+end)
+
+return app
+EOF
+
+cat > "$TEST_ROOT/app-stream-pull.lua" <<'EOF'
+local app = App.new()
+
+app:all("*", function()
+    local pulls = 0
+
+    local stream = ReadableStream.new({
+        pull = function(controller)
+            pulls = pulls + 1
+
+            if pulls == 1 then
+                controller:enqueue("pulled ")
+                return
+            end
+
+            controller:enqueue("from source")
+            controller:close()
+        end,
+    })
+
+    return Response.new({
+        status = 200,
+        body = stream,
     })
 end)
 
@@ -363,7 +570,7 @@ end)
 return app
 EOF
 
-cat > "$TEST_ROOT/app-stream.lua" <<'EOF'
+cat > "$TEST_ROOT/app-alt.lua" <<'EOF'
 local function text_stream(text)
     return ReadableStream.new({
         start = function(controller)
@@ -374,69 +581,49 @@ local function text_stream(text)
 end
 
 local app = App.new()
-
-app:all("*", function()
-    if Stream ~= nil then
-        return Response.new({
-            status = 500,
-            body = text_stream("Stream global is exposed"),
-        })
-    end
-
-    local stream = ReadableStream.new({
-        start = function(controller)
-            controller:enqueue("hello ")
-            controller:enqueue("from lua stream")
-            controller:close()
-        end,
-    })
-
-    if stream.enqueue ~= nil then
-        return Response.new({
-            status = 500,
-            body = text_stream("ReadableStream exposes enqueue"),
-        })
-    end
-
+app:all("/lua-alt", function()
     return Response.new({
-        status = 200,
-        body = stream,
+        status = 202,
+        body = text_stream("hello from second lua handler"),
     })
 end)
-
 return app
 EOF
 
-cat > "$TEST_ROOT/app-stream-pull.lua" <<'EOF'
+cat > "$TEST_ROOT/app-args.lua" <<'EOF'
+local function text_stream(text)
+    return ReadableStream.new({
+        start = function(controller)
+            controller:enqueue(text)
+            controller:close()
+        end,
+    })
+end
+
+local ok = pcall(function()
+    App.new("bad")
+end)
+
 local app = App.new()
 
 app:all("*", function()
-    local pulls = 0
-
-    local stream = ReadableStream.new({
-        pull = function(controller)
-            pulls = pulls + 1
-
-            if pulls == 1 then
-                controller:enqueue("pulled ")
-                return
-            end
-
-            controller:enqueue("from source")
-            controller:close()
-        end,
-    })
+    if ok then
+        return Response.new({
+            status = 500,
+            body = text_stream("App.new accepted an argument"),
+        })
+    end
 
     return Response.new({
-        status = 200,
-        body = stream,
+        status = 203,
+        body = text_stream("App.new rejected arguments"),
     })
 end)
 
 return app
 EOF
 
-cat > "$TEST_ROOT/app-request-headers-new.lua" <<'EOF'
+cat > "$TEST_ROOT/app-coroutine-disabled.lua" <<'EOF'
 local function text_stream(text)
     return ReadableStream.new({
         start = function(controller)
@@ -447,174 +634,26 @@ local function text_stream(text)
 end
 
 local app = App.new()
+local require_ok = pcall(require, "coroutine")
 
 app:all("*", function()
-    local ok, err = pcall(function()
-        local headers = Headers.new({ ["X-Test"] = "one" })
-        local body = ReadableStream.new({
-            start = function(controller)
-                controller:enqueue("request body")
-                controller:close()
-            end,
-        })
-
-        Headers.new()
-        Headers.new(headers)
-        Request.new()
-        Request.new({})
-        Request.new({ headers = headers })
-        Request.new({ headers = { ["X-Test"] = "two" } })
-        Request.new({ url = "https://example.test/path", method = "POST" })
-        Request.new({
-            url = "https://example.test/headers",
-            method = "PUT",
-            headers = headers,
-        })
-        Request.new({ method = "POST", body = body })
-        Request.new({
-            url = "https://example.test/body",
-            method = "POST",
-            headers = headers,
-            body = body,
-        })
-
-        local empty = Request.new()
-        if empty.url ~= "" then
-            error("default request url mismatch")
-        end
-        if empty.method ~= "GET" then
-            error("default request method mismatch")
-        end
-        if empty.headers == nil then
-            error("default request headers missing")
-        end
-        if empty.body ~= nil then
-            error("default request body should be nil")
-        end
-
-        local with_body = Request.new({
-            url = "https://example.test/body",
-            method = "POST",
-            headers = headers,
-            body = body,
-        })
-        if with_body.url ~= "https://example.test/body" then
-            error("request url mismatch")
-        end
-        if with_body.method ~= "POST" then
-            error("request method mismatch")
-        end
-        if with_body.headers == nil then
-            error("request headers missing")
-        end
-        if with_body.headers == headers then
-            error("request headers were not copied")
-        end
-        if with_body.body ~= body then
-            error("request body stream mismatch")
-        end
-    end)
-
-    if not ok then
+    if coroutine ~= nil then
         return Response.new({
             status = 500,
-            body = text_stream(err),
+            body = text_stream("coroutine global is available"),
+        })
+    end
+
+    if require_ok then
+        return Response.new({
+            status = 500,
+            body = text_stream("coroutine module is available"),
         })
     end
 
     return Response.new({
         status = 200,
-        body = text_stream("Request.new and Headers.new"),
-    })
-end)
-
-return app
-EOF
-
-cat > "$TEST_ROOT/app-response-new.lua" <<'EOF'
-local function text_stream(text)
-    return ReadableStream.new({
-        start = function(controller)
-            controller:enqueue(text)
-            controller:close()
-        end,
-    })
-end
-
-local app = App.new()
-
-app:all("*", function()
-    local ok, err = pcall(function()
-        local headers = Headers.new({ ["X-Test"] = "one" })
-        local body = ReadableStream.new({
-            start = function(controller)
-                controller:enqueue("response body")
-                controller:close()
-            end,
-        })
-
-        Response.new()
-        Response.new({})
-        Response.new({ headers = headers })
-        Response.new({ headers = { ["X-Test"] = "two" } })
-        Response.new({ status = 201 })
-        Response.new({ status = 204, headers = headers, body = body })
-
-        local empty = Response.new()
-        if empty.status ~= 200 then
-            error("default response status mismatch")
-        end
-        if empty.headers == nil then
-            error("default response headers missing")
-        end
-        if empty.body ~= nil then
-            error("default response body should be nil")
-        end
-
-        local with_body = Response.new({
-            status = 202,
-            headers = headers,
-            body = body,
-        })
-        if with_body.status ~= 202 then
-            error("response status mismatch")
-        end
-        if with_body.headers == nil then
-            error("response headers missing")
-        end
-        if with_body.headers == headers then
-            error("response headers were not copied")
-        end
-        if with_body.body ~= body then
-            error("response body stream mismatch")
-        end
-
-        local bad_status_ok = pcall(function()
-            Response.new({ status = 99 })
-        end)
-        if bad_status_ok then
-            error("Response.new accepted invalid status")
-        end
-
-        local bad_body_ok = pcall(function()
-            Response.new({ body = "bad" })
-        end)
-        if bad_body_ok then
-            error("Response.new accepted invalid body")
-        end
-    end)
-
-    if not ok then
-        return Response.new({
-            status = 500,
-            body = text_stream(err),
-        })
-    end
-
-    return Response.new({
-        status = 200,
-        headers = { ["X-Response-Test"] = "ok" },
-        body = text_stream("Response.new"),
+        body = text_stream("coroutine disabled"),
     })
 end)
 
@@ -636,8 +675,44 @@ http {
     server {
         listen 127.0.0.1:$PORT;
 
+        location /lua-body {
+            lua_web_file $TEST_ROOT/app-body.lua;
+        }
+
+        location /lua-request-new {
+            lua_web_file $TEST_ROOT/app-request-new.lua;
+        }
+
         location /lua {
             lua_web_file $TEST_ROOT/app.lua;
+        }
+
+        location /lua-body-stream {
+            lua_web_file $TEST_ROOT/app-body-stream.lua;
+        }
+
+        location /lua-response-new {
+            lua_web_file $TEST_ROOT/app-response-new.lua;
+        }
+
+        location /lua-headers-new {
+            lua_web_file $TEST_ROOT/app-headers-new.lua;
+        }
+
+        location /lua-stream {
+            lua_web_file $TEST_ROOT/app-stream.lua;
+        }
+
+        location /lua-stream-pull {
+            lua_web_file $TEST_ROOT/app-stream-pull.lua;
+        }
+
+        location /lua-fetch {
+            lua_web_file $TEST_ROOT/app-fetch.lua;
+        }
+
+        location /fetch-upstream {
+            lua_web_file $TEST_ROOT/app-fetch-upstream.lua;
         }
 
         location /lua-alt {
@@ -650,38 +725,6 @@ http {
 
         location /lua-coroutine-disabled {
             lua_web_file $TEST_ROOT/app-coroutine-disabled.lua;
-        }
-
-        location /lua-body {
-            lua_web_file $TEST_ROOT/app-body.lua;
-        }
-
-        location /lua-body-stream {
-            lua_web_file $TEST_ROOT/app-body-stream.lua;
-        }
-
-        location /lua-fetch {
-            lua_web_file $TEST_ROOT/app-fetch.lua;
-        }
-
-        location /fetch-upstream {
-            lua_web_file $TEST_ROOT/app-fetch-upstream.lua;
-        }
-
-        location /lua-stream {
-            lua_web_file $TEST_ROOT/app-stream.lua;
-        }
-
-        location /lua-stream-pull {
-            lua_web_file $TEST_ROOT/app-stream-pull.lua;
-        }
-
-        location /lua-request-headers-new {
-            lua_web_file $TEST_ROOT/app-request-headers-new.lua;
-        }
-
-        location /lua-response-new {
-            lua_web_file $TEST_ROOT/app-response-new.lua;
         }
     }
 }
@@ -701,11 +744,12 @@ fi
 "$NGINX" -p "$TEST_ROOT/" -c conf/nginx.conf
 
 for test_file in \
-    test_lua_web.py \
     test_requests.py \
     test_response.py \
+    test_headers.py \
     test_stream.py \
-    test_fetch.py
+    test_fetch.py \
+    test_app.py
 do
     TEST_NGINX_PORT="$PORT" \
     TEST_NGINX_ROOT="$TEST_ROOT" \

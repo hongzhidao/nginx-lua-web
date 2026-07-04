@@ -13,21 +13,15 @@
 #include <lua.h>
 
 
-typedef struct ngx_lua_web_stream_s  ngx_lua_web_stream_t;
-typedef struct ngx_lua_web_stream_source_s  ngx_lua_web_stream_source_t;
-typedef struct ngx_lua_web_headers_s  ngx_lua_web_headers_t;
 typedef struct ngx_lua_web_request_s  ngx_lua_web_request_t;
 typedef struct ngx_lua_web_response_s  ngx_lua_web_response_t;
+typedef struct ngx_lua_web_headers_s  ngx_lua_web_headers_t;
+typedef struct ngx_lua_web_stream_s  ngx_lua_web_stream_t;
+typedef struct ngx_lua_web_stream_source_s  ngx_lua_web_stream_source_t;
 
 typedef ngx_int_t (*ngx_lua_web_stream_pull_pt)(
     ngx_lua_web_stream_t *stream, ngx_lua_web_stream_source_t *source);
 typedef void (*ngx_lua_web_stream_wake_pt)(void *data);
-
-struct ngx_lua_web_stream_source_s {
-    ngx_lua_web_stream_pull_pt   pull;
-    void                        *data;
-};
-
 
 struct ngx_lua_web_request_s {
     ngx_lua_web_headers_t  *headers;
@@ -44,10 +38,22 @@ struct ngx_lua_web_response_s {
 };
 
 
-ngx_lua_web_stream_t *ngx_lua_web_stream_create(lua_State *L,
-    ngx_pool_t *pool);
-ngx_lua_web_stream_t *ngx_lua_web_stream_get(lua_State *L, int index);
-void ngx_lua_web_stream_register(lua_State *L);
+struct ngx_lua_web_stream_source_s {
+    ngx_lua_web_stream_pull_pt   pull;
+    void                        *data;
+};
+
+
+ngx_lua_web_request_t *ngx_lua_web_request_create(lua_State *L);
+ngx_lua_web_request_t *ngx_lua_web_request_get(lua_State *L, int index);
+void ngx_lua_web_request_init(lua_State *L, ngx_lua_web_request_t *request,
+    int init_index, int arg);
+ngx_int_t ngx_lua_web_request_set_string(lua_State *L, ngx_str_t *field,
+    const char *value, size_t len);
+void ngx_lua_web_request_register(lua_State *L);
+ngx_lua_web_response_t *ngx_lua_web_response_create(lua_State *L);
+ngx_lua_web_response_t *ngx_lua_web_response_get(lua_State *L, int index);
+void ngx_lua_web_response_register(lua_State *L);
 ngx_lua_web_headers_t *ngx_lua_web_headers_create(lua_State *L);
 void ngx_lua_web_headers_init(lua_State *L, ngx_lua_web_headers_t *headers,
     int init_index, int arg);
@@ -59,16 +65,10 @@ void ngx_lua_web_headers_set(lua_State *L,
     ngx_lua_web_headers_t *headers, const char *name, size_t name_len,
     const char *value, size_t value_len);
 void ngx_lua_web_headers_register(lua_State *L);
-ngx_lua_web_request_t *ngx_lua_web_request_create(lua_State *L);
-ngx_lua_web_request_t *ngx_lua_web_request_get(lua_State *L, int index);
-void ngx_lua_web_request_init(lua_State *L, ngx_lua_web_request_t *request,
-    int init_index, int arg);
-ngx_int_t ngx_lua_web_request_set_string(lua_State *L, ngx_str_t *field,
-    const char *value, size_t len);
-void ngx_lua_web_request_register(lua_State *L);
-ngx_lua_web_response_t *ngx_lua_web_response_create(lua_State *L);
-ngx_lua_web_response_t *ngx_lua_web_response_get(lua_State *L, int index);
-void ngx_lua_web_response_register(lua_State *L);
+ngx_lua_web_stream_t *ngx_lua_web_stream_create(lua_State *L,
+    ngx_pool_t *pool);
+ngx_lua_web_stream_t *ngx_lua_web_stream_get(lua_State *L, int index);
+void ngx_lua_web_stream_register(lua_State *L);
 void ngx_lua_web_stream_set_source(ngx_lua_web_stream_t *stream,
     ngx_lua_web_stream_source_t *source);
 void ngx_lua_web_stream_enqueue_bufs(ngx_lua_web_stream_t *stream,

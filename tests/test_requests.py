@@ -23,13 +23,13 @@ def test_request_body_reader_yields_until_body_arrives():
         raise AssertionError(f"expected delayed request body, got {body!r}")
 
 
-def test_request_and_headers_new():
-    status, body = request("/lua-request-headers-new")
+def test_request_new():
+    status, body = request("/lua-request-new")
 
     if status != 200:
         raise AssertionError(f"expected 200, got {status}: {body!r}")
 
-    if body != "Request.new and Headers.new":
+    if body != "Request.new":
         raise AssertionError(f"expected constructor body, got {body!r}")
 
 
@@ -39,8 +39,8 @@ def main():
          test_request_body_readable_stream_reader_reads_body),
         ("request body reader yields until body arrives",
          test_request_body_reader_yields_until_body_arrives),
-        ("Request.new and Headers.new",
-         test_request_and_headers_new),
+        ("Request.new",
+         test_request_new),
     ])
 
 

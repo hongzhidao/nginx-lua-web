@@ -1,7 +1,7 @@
 from lua_web_test import LUA_WEB_PATH, request, run_tests
 
 
-def test_lua_web_file_returns_response():
+def test_app_file_returns_response():
     status, body = request(LUA_WEB_PATH)
 
     if status != 201:
@@ -11,7 +11,7 @@ def test_lua_web_file_returns_response():
         raise AssertionError(f"expected lua response body, got {body!r}")
 
 
-def test_lua_web_file_keeps_location_refs_separate():
+def test_app_file_keeps_location_refs_separate():
     status, body = request("/lua-alt")
 
     if status != 202:
@@ -42,11 +42,11 @@ def test_coroutine_library_is_not_exposed():
 
 
 def main():
-    return run_tests("lua_web_file behavior", [
+    return run_tests("App behavior", [
         ("lua handler returns Response",
-         test_lua_web_file_returns_response),
+         test_app_file_returns_response),
         ("location refs stay separate",
-         test_lua_web_file_keeps_location_refs_separate),
+         test_app_file_keeps_location_refs_separate),
         ("App.new rejects arguments",
          test_app_new_rejects_arguments),
         ("coroutine library is not exposed",
