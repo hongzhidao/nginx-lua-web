@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2026
+ * Copyright (C) 2026 Zhidao HONG
  */
 
 
@@ -10,6 +10,8 @@
 #include <lua.h>
 #include <lauxlib.h>
 #include <lualib.h>
+
+#include "ngx_lua.h"
 
 
 typedef struct {
@@ -109,15 +111,18 @@ ngx_http_lua_handler(ngx_http_request_t *r)
 static ngx_int_t
 ngx_http_lua_run(ngx_http_request_t *r, ngx_uint_t *status, ngx_str_t *body)
 {
-    int           co_ref, nresults, rc;
-    lua_State    *L, *co;
-    ngx_int_t     rv;
+    int                       app_index, app_ref, co_ref, handler_ref;
+    int                       nresults, rc;
+    lua_State                *L, *co;
+    ngx_int_t                 rv;
+    ngx_lua_app_t            *app;
     ngx_http_lua_main_conf_t  *lmcf;
     ngx_http_lua_loc_conf_t   *llcf;
 
     lmcf = ngx_http_get_module_main_conf(r, ngx_http_lua_module);
     llcf = ngx_http_get_module_loc_conf(r, ngx_http_lua_module);
     L = lmcf->lua;
+    app_ref = LUA_NOREF;
     co_ref = LUA_NOREF;
     nresults = 0;
     rv = NGX_ERROR;
@@ -145,24 +150,82 @@ ngx_http_lua_run(ngx_http_request_t *r, ngx_uint_t *status, ngx_str_t *body)
 
     rc = lua_resume(co, L, 0, &nresults);
 
+    if (rc == LUA_YIELD) {
+        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+                      "lua_web_file \"%V\" yielded without an async "
+                      "continuation",
+                      &llcf->lua_web_file);
+        goto done;
+    }
+
+    if (rc != LUA_OK) {
+        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+                      "lua_web_file \"%V\" failed: %s",
+                      &llcf->lua_web_file, lua_tostring(co, -1));
+        goto done;
+    }
+
+    if (nresults < 1) {
+        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+                      "lua_web_file \"%V\" returned no app",
+                      &llcf->lua_web_file);
+        goto done;
+    }
+
+    app_index = lua_gettop(co) - nresults + 1;
+
+    app = ngx_lua_app_get(co, app_index);
+    if (app == NULL) {
+        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+                      "lua_web_file \"%V\" must return app",
+                      &llcf->lua_web_file);
+        goto done;
+    }
+
+    handler_ref = ngx_lua_app_find_handler(app, (char *) r->uri.data,
+                                           r->uri.len);
+
+    if (handler_ref == LUA_NOREF) {
+        ngx_str_set(body, "");
+        *status = NGX_HTTP_NOT_FOUND;
+        rv = NGX_OK;
+        goto done;
+    }
+
+    lua_pushvalue(co, app_index);
+    app_ref = luaL_ref(co, LUA_REGISTRYINDEX);
+
+    lua_settop(co, 0);
+    lua_rawgeti(co, LUA_REGISTRYINDEX, handler_ref);
+
+    if (!lua_isfunction(co, -1)) {
+        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+                      "lua_web_file \"%V\" route handler is not a function",
+                      &llcf->lua_web_file);
+        goto done;
+    }
+
+    rc = lua_resume(co, L, 0, &nresults);
+
     if (rc == LUA_OK) {
         rv = ngx_http_lua_read_result(r, co, nresults, status, body);
 
     } else if (rc == LUA_YIELD) {
         ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
-                      "lua_web_file \"%V\" yielded without an async "
-                      "continuation",
+                      "lua_web_file \"%V\" route handler yielded without "
+                      "an async continuation",
                       &llcf->lua_web_file);
 
     } else {
         ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
-                      "lua_web_file \"%V\" failed: %s",
+                      "lua_web_file \"%V\" route handler failed: %s",
                       &llcf->lua_web_file, lua_tostring(co, -1));
     }
 
 done:
 
     (void) lua_closethread(co, L);
+    luaL_unref(L, LUA_REGISTRYINDEX, app_ref);
     luaL_unref(L, LUA_REGISTRYINDEX, co_ref);
 
     return rv;
@@ -181,7 +244,7 @@ ngx_http_lua_read_result(ngx_http_request_t *r, lua_State *co, int nresults,
 
     if (nresults < 1) {
         ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
-                      "lua_web_file returned no values");
+                      "lua handler returned no values");
         return NGX_ERROR;
     }
 
@@ -189,7 +252,7 @@ ngx_http_lua_read_result(ngx_http_request_t *r, lua_State *co, int nresults,
 
     if (!lua_istable(co, table)) {
         ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
-                      "lua_web_file must return { status, text }");
+                      "lua handler must return { status, text }");
         return NGX_ERROR;
     }
 
@@ -199,7 +262,7 @@ ngx_http_lua_read_result(ngx_http_request_t *r, lua_State *co, int nresults,
 
     if (!isnum || code < 100 || code > 599) {
         ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
-                      "lua_web_file returned invalid status");
+                      "lua handler returned invalid status");
         return NGX_ERROR;
     }
 
@@ -208,7 +271,7 @@ ngx_http_lua_read_result(ngx_http_request_t *r, lua_State *co, int nresults,
 
     if (text == NULL) {
         ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
-                      "lua_web_file returned invalid text");
+                      "lua handler returned invalid text");
         lua_pop(co, 1);
         return NGX_ERROR;
     }
@@ -287,7 +350,7 @@ ngx_http_lua_load_file(ngx_conf_t *cf, ngx_http_lua_loc_conf_t *llcf)
 
     if (luaL_loadfile(L, (char *) llcf->lua_web_file.data) != LUA_OK) {
         ngx_conf_log_error(NGX_LOG_EMERG, cf, 0,
-                           "failed to load lua_web_file \"%V\": %s",
+                           "failed to parse lua_web_file \"%V\": %s",
                            &llcf->lua_web_file, lua_tostring(L, -1));
         lua_pop(L, 1);
         return NGX_CONF_ERROR;
@@ -323,6 +386,7 @@ ngx_http_lua_create_main_conf(ngx_conf_t *cf)
     }
 
     luaL_openlibs(conf->lua);
+    ngx_lua_app_register(conf->lua);
 
     cln->handler = ngx_http_lua_cleanup_vm;
     cln->data = conf;

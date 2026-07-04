@@ -39,11 +39,37 @@ mkdir -p "$TEST_ROOT/proxy_temp" "$TEST_ROOT/fastcgi_temp"
 mkdir -p "$TEST_ROOT/uwsgi_temp" "$TEST_ROOT/scgi_temp"
 
 cat > "$TEST_ROOT/app.lua" <<'EOF'
-return { 201, "hello from lua" }
+local app = App.new()
+app:all("*", function()
+    return { 201, "hello from lua handler" }
+end)
+return app
 EOF
 
 cat > "$TEST_ROOT/app-alt.lua" <<'EOF'
-return { 202, "hello from second lua" }
+local app = App.new()
+app:all("/lua-alt", function()
+    return { 202, "hello from second lua handler" }
+end)
+return app
+EOF
+
+cat > "$TEST_ROOT/app-args.lua" <<'EOF'
+local ok = pcall(function()
+    App.new("bad")
+end)
+
+local app = App.new()
+
+app:all("*", function()
+    if ok then
+        return { 500, "App.new accepted an argument" }
+    end
+
+    return { 203, "App.new rejected arguments" }
+end)
+
+return app
 EOF
 
 cat > "$TEST_ROOT/conf/nginx.conf" <<EOF
@@ -67,6 +93,10 @@ http {
 
         location /lua-alt {
             lua_web_file $TEST_ROOT/app-alt.lua;
+        }
+
+        location /lua-app-args {
+            lua_web_file $TEST_ROOT/app-args.lua;
         }
     }
 }

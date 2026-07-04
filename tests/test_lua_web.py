@@ -39,7 +39,7 @@ def test_lua_web_file_returns_status_and_text():
     if status != 201:
         raise AssertionError(f"expected 201, got {status}")
 
-    if body != "hello from lua":
+    if body != "hello from lua handler":
         raise AssertionError(f"expected lua response body, got {body!r}")
 
 
@@ -49,14 +49,25 @@ def test_lua_web_file_keeps_location_refs_separate():
     if status != 202:
         raise AssertionError(f"expected 202, got {status}")
 
-    if body != "hello from second lua":
+    if body != "hello from second lua handler":
         raise AssertionError(f"expected second lua response body, got {body!r}")
+
+
+def test_app_new_rejects_arguments():
+    status, body = request("/lua-app-args")
+
+    if status != 203:
+        raise AssertionError(f"expected 203, got {status}")
+
+    if body != "App.new rejected arguments":
+        raise AssertionError(f"expected App.new rejection body, got {body!r}")
 
 
 def main():
     try:
         test_lua_web_file_returns_status_and_text()
         test_lua_web_file_keeps_location_refs_separate()
+        test_app_new_rejects_arguments()
     except Exception as exc:
         print(f"not ok - lua_web_file returns status and text: {exc}",
               file=sys.stderr)

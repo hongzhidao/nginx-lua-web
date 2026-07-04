@@ -4,7 +4,8 @@ ngx_lua_src="$ngx_addon_dir/lua-5.5.0/src"
 ngx_lua_lib="$ngx_lua_src/liblua.a"
 ngx_lua_deps="$ngx_lua_lib"
 ngx_lua_libs="$ngx_lua_lib -lm $NGX_LIBDL"
-ngx_lua_module_src="$ngx_addon_dir/src/ngx_http_lua_module.c"
+ngx_lua_module_src="$ngx_addon_dir/src/ngx_http_lua_module.c \
+    $ngx_addon_dir/src/ngx_lua_app.c"
 
 if test ! -f "$ngx_lua_src/Makefile"; then
     echo "$0: error: Lua 5.5 source Makefile not found in $ngx_lua_src"
