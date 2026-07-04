@@ -26,14 +26,6 @@ typedef struct {
 } ngx_http_lua_loc_conf_t;
 
 
-typedef struct {
-    lua_State                *main;
-    lua_State                *co;
-    int                       app_ref;
-    int                       co_ref;
-} ngx_http_lua_ctx_t;
-
-
 static ngx_int_t ngx_http_lua_handler(ngx_http_request_t *r);
 static void ngx_http_lua_request_body_handler(ngx_http_request_t *r);
 static ngx_lua_app_t *ngx_http_lua_run_file(ngx_http_request_t *r,
@@ -259,6 +251,7 @@ ngx_http_lua_run_handler(ngx_http_request_t *r, ngx_http_lua_ctx_t *ctx,
     int                       handler_ref;
     lua_State                *co;
     ngx_str_t                 body;
+    ngx_lua_web_stream_t     *request_body;
     ngx_http_lua_loc_conf_t  *llcf;
 
     co = ctx->co;
@@ -285,9 +278,12 @@ ngx_http_lua_run_handler(ngx_http_request_t *r, ngx_http_lua_ctx_t *ctx,
         return NGX_HTTP_INTERNAL_SERVER_ERROR;
     }
 
-    if (ngx_http_lua_request_body_stream_create(r) == NULL) {
+    request_body = ngx_http_lua_request_body_stream_create(r);
+    if (request_body == NULL) {
         return NGX_HTTP_INTERNAL_SERVER_ERROR;
     }
+
+    ctx->request_body = request_body;
 
     return ngx_http_lua_resume_request(r, 1);
 }

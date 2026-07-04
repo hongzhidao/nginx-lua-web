@@ -15,7 +15,10 @@ struct ngx_lua_web_stream_s {
     ngx_lua_web_stream_source_t  *source;
     ngx_chain_t                  *bufs;
     ngx_chain_t                 **last;
+    ngx_lua_web_stream_wake_pt    wake;
+    void                         *data;
     unsigned  closed:1;
+    unsigned  errored:1;
 };
 
 
@@ -33,22 +36,6 @@ ngx_lua_web_stream_set_metatable(lua_State *L)
     }
 
     lua_setmetatable(L, -2);
-}
-
-
-static void
-ngx_lua_web_stream_pop_buf(ngx_lua_web_stream_t *stream, ngx_pool_t *pool)
-{
-    ngx_chain_t  *cl;
-
-    cl = stream->bufs;
-    stream->bufs = cl->next;
-
-    if (stream->bufs == NULL) {
-        stream->last = &stream->bufs;
-    }
-
-    ngx_free_chain(pool, cl);
 }
 
 
@@ -149,6 +136,7 @@ ngx_lua_web_stream_read(ngx_lua_web_stream_t *stream, ngx_pool_t *pool,
             }
 
             if (!ngx_buf_in_memory(b)) {
+                stream->errored = 1;
                 return NGX_ERROR;
             }
 
@@ -178,15 +166,65 @@ ngx_lua_web_stream_read(ngx_lua_web_stream_t *stream, ngx_pool_t *pool,
         }
 
         rc = stream->source->pull(stream, stream->source);
-
         if (rc == NGX_OK) {
             continue;
         }
 
-        if (rc == NGX_DONE) {
-            stream->closed = 1;
+        if (rc == NGX_AGAIN) {
+            return NGX_AGAIN;
         }
 
-        return rc;
+        if (rc == NGX_DONE) {
+            stream->closed = 1;
+            return NGX_DONE;
+        }
+
+        stream->errored = 1;
+
+        return NGX_ERROR;
     }
+}
+
+
+static void
+ngx_lua_web_stream_pop_buf(ngx_lua_web_stream_t *stream, ngx_pool_t *pool)
+{
+    ngx_chain_t  *cl;
+
+    cl = stream->bufs;
+    stream->bufs = cl->next;
+
+    if (stream->bufs == NULL) {
+        stream->last = &stream->bufs;
+    }
+
+    ngx_free_chain(pool, cl);
+}
+
+
+void
+ngx_lua_web_stream_wait(ngx_lua_web_stream_t *stream,
+    ngx_lua_web_stream_wake_pt wake, void *data)
+{
+    stream->wake = wake;
+    stream->data = data;
+}
+
+
+void
+ngx_lua_web_stream_wake(ngx_lua_web_stream_t *stream)
+{
+    void                         *data;
+    ngx_lua_web_stream_wake_pt    wake;
+
+    wake = stream->wake;
+    if (wake == NULL) {
+        return;
+    }
+
+    data = stream->data;
+    stream->wake = NULL;
+    stream->data = NULL;
+
+    wake(data);
 }

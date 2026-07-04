@@ -18,6 +18,7 @@ typedef struct ngx_lua_web_stream_source_s  ngx_lua_web_stream_source_t;
 
 typedef ngx_int_t (*ngx_lua_web_stream_pull_pt)(
     ngx_lua_web_stream_t *stream, ngx_lua_web_stream_source_t *source);
+typedef void (*ngx_lua_web_stream_wake_pt)(void *data);
 
 struct ngx_lua_web_stream_source_s {
     ngx_lua_web_stream_pull_pt   pull;
@@ -34,6 +35,9 @@ ngx_int_t ngx_lua_web_stream_enqueue_string(ngx_lua_web_stream_t *stream,
     ngx_pool_t *pool, u_char *data, size_t len);
 ngx_int_t ngx_lua_web_stream_read(ngx_lua_web_stream_t *stream,
     ngx_pool_t *pool, ngx_str_t *value);
+void ngx_lua_web_stream_wait(ngx_lua_web_stream_t *stream,
+    ngx_lua_web_stream_wake_pt wake, void *data);
+void ngx_lua_web_stream_wake(ngx_lua_web_stream_t *stream);
 
 
 #endif /* _NGX_LUA_WEB_H_INCLUDED_ */
