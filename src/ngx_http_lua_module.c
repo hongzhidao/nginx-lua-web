@@ -143,6 +143,7 @@ ngx_http_lua_request_body_handler(ngx_http_request_t *r)
     ctx->main = lmcf->lua;
     ctx->app_ref = LUA_NOREF;
     ctx->co_ref = LUA_NOREF;
+    ctx->request_ref = LUA_NOREF;
 
     cln->handler = ngx_http_lua_cleanup_ctx;
     cln->data = ctx;
@@ -249,7 +250,6 @@ ngx_http_lua_run_handler(ngx_http_request_t *r, ngx_http_lua_ctx_t *ctx,
 {
     int                       handler_ref;
     lua_State                *co;
-    ngx_lua_web_stream_t     *request_body;
     ngx_http_lua_loc_conf_t  *llcf;
 
     co = ctx->co;
@@ -275,12 +275,13 @@ ngx_http_lua_run_handler(ngx_http_request_t *r, ngx_http_lua_ctx_t *ctx,
         return NGX_HTTP_INTERNAL_SERVER_ERROR;
     }
 
-    request_body = ngx_http_lua_request_body_stream_create(r);
-    if (request_body == NULL) {
+    ctx->request = ngx_http_lua_request_create(r, ctx);
+    if (ctx->request == NULL) {
         return NGX_HTTP_INTERNAL_SERVER_ERROR;
     }
 
-    ctx->request_body = request_body;
+    lua_pushvalue(co, -1);
+    ctx->request_ref = luaL_ref(co, LUA_REGISTRYINDEX);
 
     return ngx_http_lua_resume_request(r, 1);
 }
@@ -406,6 +407,13 @@ ngx_http_lua_cleanup_ctx(void *data)
         ctx->app_ref = LUA_NOREF;
     }
 
+    if (ctx->request_ref != LUA_NOREF) {
+        luaL_unref(ctx->main, LUA_REGISTRYINDEX, ctx->request_ref);
+        ctx->request_ref = LUA_NOREF;
+    }
+
+    ctx->request = NULL;
+
     if (ctx->co_ref != LUA_NOREF) {
         luaL_unref(ctx->main, LUA_REGISTRYINDEX, ctx->co_ref);
         ctx->co_ref = LUA_NOREF;
@@ -465,6 +473,8 @@ ngx_http_lua_create_main_conf(ngx_conf_t *cf)
     ngx_lua_disable_coroutine(conf->lua);
     ngx_lua_app_register(conf->lua);
     ngx_lua_web_stream_register(conf->lua);
+    ngx_lua_web_headers_register(conf->lua);
+    ngx_lua_web_request_register(conf->lua);
 
     cln->handler = ngx_http_lua_cleanup_vm;
     cln->data = conf;

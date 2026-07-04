@@ -66,7 +66,6 @@ static int ngx_lua_web_stream_reader_gc(lua_State *L);
 static ngx_lua_web_stream_t *ngx_lua_web_stream_reader_check_stream(
     lua_State *L, ngx_lua_web_stream_reader_t *reader);
 static void ngx_lua_web_stream_reader_wake(void *data);
-static void ngx_lua_web_stream_reader_set_metatable(lua_State *L);
 
 
 static const luaL_Reg  ngx_lua_web_stream_global_methods[] = {
@@ -95,9 +94,9 @@ static const luaL_Reg  ngx_lua_web_stream_reader_methods[] = {
 };
 
 
-static void ngx_lua_web_stream_push_metatable(lua_State *L);
-static void ngx_lua_web_stream_set_metatable(lua_State *L);
-static void ngx_lua_web_stream_controller_set_metatable(lua_State *L);
+static void ngx_lua_web_stream_register_metatable(lua_State *L);
+static void ngx_lua_web_stream_controller_register_metatable(lua_State *L);
+static void ngx_lua_web_stream_reader_register_metatable(lua_State *L);
 static ngx_int_t ngx_lua_web_stream_read_buffered(
     ngx_lua_web_stream_t *stream, ngx_pool_t *pool, ngx_str_t *value);
 static ngx_int_t ngx_lua_web_stream_read_buffer(
@@ -109,7 +108,7 @@ static void ngx_lua_web_stream_pop_buf(ngx_lua_web_stream_t *stream,
 /* Lua metatables. */
 
 static void
-ngx_lua_web_stream_push_metatable(lua_State *L)
+ngx_lua_web_stream_register_metatable(lua_State *L)
 {
     if (luaL_newmetatable(L, NGX_LUA_WEB_STREAM_METATABLE)) {
         lua_pushliteral(L, "ReadableStream");
@@ -118,19 +117,13 @@ ngx_lua_web_stream_push_metatable(lua_State *L)
         lua_pushvalue(L, -1);
         lua_setfield(L, -2, "__index");
     }
+
+    lua_pop(L, 1);
 }
 
 
 static void
-ngx_lua_web_stream_set_metatable(lua_State *L)
-{
-    ngx_lua_web_stream_push_metatable(L);
-    lua_setmetatable(L, -2);
-}
-
-
-static void
-ngx_lua_web_stream_controller_set_metatable(lua_State *L)
+ngx_lua_web_stream_controller_register_metatable(lua_State *L)
 {
     if (luaL_newmetatable(L, NGX_LUA_WEB_STREAM_CONTROLLER_METATABLE)) {
         lua_pushliteral(L, "ReadableStreamDefaultController");
@@ -142,12 +135,12 @@ ngx_lua_web_stream_controller_set_metatable(lua_State *L)
         lua_setfield(L, -2, "__index");
     }
 
-    lua_setmetatable(L, -2);
+    lua_pop(L, 1);
 }
 
 
 static void
-ngx_lua_web_stream_reader_set_metatable(lua_State *L)
+ngx_lua_web_stream_reader_register_metatable(lua_State *L)
 {
     if (luaL_newmetatable(L, NGX_LUA_WEB_STREAM_READER_METATABLE)) {
         lua_pushliteral(L, "ReadableStreamDefaultReader");
@@ -159,7 +152,7 @@ ngx_lua_web_stream_reader_set_metatable(lua_State *L)
         lua_setfield(L, -2, "__index");
     }
 
-    lua_setmetatable(L, -2);
+    lua_pop(L, 1);
 }
 
 
@@ -179,7 +172,7 @@ ngx_lua_web_stream_create(lua_State *L, ngx_pool_t *pool)
     stream->pool = pool;
     stream->last = &stream->bufs;
 
-    ngx_lua_web_stream_set_metatable(L);
+    luaL_setmetatable(L, NGX_LUA_WEB_STREAM_METATABLE);
 
     return stream;
 }
@@ -195,8 +188,9 @@ ngx_lua_web_stream_get(lua_State *L, int index)
 void
 ngx_lua_web_stream_register(lua_State *L)
 {
-    ngx_lua_web_stream_push_metatable(L);
-    lua_pop(L, 1);
+    ngx_lua_web_stream_register_metatable(L);
+    ngx_lua_web_stream_controller_register_metatable(L);
+    ngx_lua_web_stream_reader_register_metatable(L);
 
     lua_newtable(L);
     luaL_setfuncs(L, ngx_lua_web_stream_global_methods, 0);
@@ -634,7 +628,7 @@ ngx_lua_web_stream_push_controller(lua_State *L, ngx_lua_web_stream_t *stream,
     lua_pushvalue(L, stream_index);
     lua_setiuservalue(L, -2, 1);
 
-    ngx_lua_web_stream_controller_set_metatable(L);
+    luaL_setmetatable(L, NGX_LUA_WEB_STREAM_CONTROLLER_METATABLE);
 
     return controller;
 }
@@ -670,7 +664,7 @@ ngx_lua_web_stream_get_reader(lua_State *L)
     lua_pushvalue(L, 1);
     lua_setiuservalue(L, -2, 1);
 
-    ngx_lua_web_stream_reader_set_metatable(L);
+    luaL_setmetatable(L, NGX_LUA_WEB_STREAM_READER_METATABLE);
 
     return 1;
 }

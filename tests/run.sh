@@ -139,8 +139,24 @@ end
 
 local app = App.new()
 
-app:all("*", function(body)
-    local reader = body:getReader()
+app:all("*", function(request)
+    if request.method ~= "POST" then
+        return { 500, text_stream("request method mismatch") }
+    end
+
+    if request.url ~= "/lua-body" then
+        return { 500, text_stream("request url mismatch") }
+    end
+
+    if request.headers == nil then
+        return { 500, text_stream("request headers missing") }
+    end
+
+    if request.body == nil then
+        return { 500, text_stream("request body missing") }
+    end
+
+    local reader = request.body:getReader()
     local chunks = {}
 
     while true do
@@ -161,8 +177,8 @@ EOF
 cat > "$TEST_ROOT/app-body-stream.lua" <<'EOF'
 local app = App.new()
 
-app:all("*", function(body)
-    return { 200, body }
+app:all("*", function(request)
+    return { 200, request.body }
 end)
 
 return app
@@ -229,6 +245,95 @@ end)
 return app
 EOF
 
+cat > "$TEST_ROOT/app-request-headers-new.lua" <<'EOF'
+local function text_stream(text)
+    return ReadableStream.new({
+        start = function(controller)
+            controller:enqueue(text)
+            controller:close()
+        end,
+    })
+end
+
+local app = App.new()
+
+app:all("*", function()
+    local ok, err = pcall(function()
+        local headers = Headers.new({ ["X-Test"] = "one" })
+        local body = ReadableStream.new({
+            start = function(controller)
+                controller:enqueue("request body")
+                controller:close()
+            end,
+        })
+
+        Headers.new()
+        Headers.new(headers)
+        Request.new()
+        Request.new({})
+        Request.new({ headers = headers })
+        Request.new({ headers = { ["X-Test"] = "two" } })
+        Request.new({ url = "https://example.test/path", method = "POST" })
+        Request.new({
+            url = "https://example.test/headers",
+            method = "PUT",
+            headers = headers,
+        })
+        Request.new({ method = "POST", body = body })
+        Request.new({
+            url = "https://example.test/body",
+            method = "POST",
+            headers = headers,
+            body = body,
+        })
+
+        local empty = Request.new()
+        if empty.url ~= "" then
+            error("default request url mismatch")
+        end
+        if empty.method ~= "GET" then
+            error("default request method mismatch")
+        end
+        if empty.headers == nil then
+            error("default request headers missing")
+        end
+        if empty.body ~= nil then
+            error("default request body should be nil")
+        end
+
+        local with_body = Request.new({
+            url = "https://example.test/body",
+            method = "POST",
+            headers = headers,
+            body = body,
+        })
+        if with_body.url ~= "https://example.test/body" then
+            error("request url mismatch")
+        end
+        if with_body.method ~= "POST" then
+            error("request method mismatch")
+        end
+        if with_body.headers == nil then
+            error("request headers missing")
+        end
+        if with_body.headers == headers then
+            error("request headers were not copied")
+        end
+        if with_body.body ~= body then
+            error("request body stream mismatch")
+        end
+    end)
+
+    if not ok then
+        return { 500, text_stream(err) }
+    end
+
+    return { 200, text_stream("Request.new and Headers.new") }
+end)
+
+return app
+EOF
+
 cat > "$TEST_ROOT/conf/nginx.conf" <<EOF
 worker_processes  1;
 error_log  logs/error.log notice;
@@ -274,6 +379,10 @@ http {
 
         location /lua-stream-pull {
             lua_web_file $TEST_ROOT/app-stream-pull.lua;
+        }
+
+        location /lua-request-headers-new {
+            lua_web_file $TEST_ROOT/app-request-headers-new.lua;
         }
     }
 }
