@@ -239,6 +239,26 @@ end
 
 local app = App.new()
 
+local function read_body(response)
+    if response.body == nil then
+        return ""
+    end
+
+    local reader = response.body:getReader()
+    local chunks = {}
+
+    while true do
+        local result = reader:read()
+        if result.done then
+            break
+        end
+
+        chunks[#chunks + 1] = result.value
+    end
+
+    return table.concat(chunks)
+end
+
 app:all("*", function(request)
     local body = ReadableStream.new({
         start = function(controller)
@@ -248,7 +268,7 @@ app:all("*", function(request)
         end,
     })
 
-    local init_ok = fetch("https://example.test/fetch", {
+    local init_ok, init_err = fetch("https://example.test/fetch", {
         method = "POST",
         headers = {
             ["X-Test"] = "one",
@@ -256,25 +276,32 @@ app:all("*", function(request)
         body = body,
     })
 
-    if init_ok ~= true then
+    if init_ok == nil or init_ok.status ~= 200 then
         return Response.new({
             status = 500,
-            body = text_stream("fetch init did not return true"),
+            body = text_stream(init_err or "fetch init status mismatch"),
         })
     end
 
-    local ok = fetch(request)
-
-    if ok ~= true then
+    if read_body(init_ok) ~= "fetch init response" then
         return Response.new({
             status = 500,
-            body = text_stream("fetch did not return true"),
+            body = text_stream("fetch init body mismatch"),
+        })
+    end
+
+    local response, err = fetch(request)
+
+    if response == nil or response.status ~= 200 then
+        return Response.new({
+            status = 500,
+            body = text_stream(err or "fetch response status mismatch"),
         })
     end
 
     return Response.new({
-        status = 200,
-        body = text_stream("fetch returned true"),
+        status = response.status,
+        body = response.body,
     })
 end)
 
@@ -311,8 +338,20 @@ app:all("*", function(request)
 
     local body = table.concat(chunks)
 
-    if body == "init body" or body == "delayed fetch body" then
-        return Response.new({ status = 204 })
+    if body == "init body" then
+        return Response.new({
+            status = 200,
+            headers = { ["X-Fetch-Upstream"] = "ok" },
+            body = text_stream("fetch init response"),
+        })
+    end
+
+    if body == "delayed fetch body" then
+        return Response.new({
+            status = 200,
+            headers = { ["X-Fetch-Upstream"] = "ok" },
+            body = text_stream("fetch request response"),
+        })
     end
 
     return Response.new({
@@ -661,31 +700,14 @@ fi
 
 "$NGINX" -p "$TEST_ROOT/" -c conf/nginx.conf
 
-TEST_NGINX_PORT="$PORT" python3 "$MODULE_DIR/tests/test_lua_web.py"
-
-FETCH_CONNECTS=$(grep -c "fetch connected" "$TEST_ROOT/logs/error.log" || true)
-if [ "$FETCH_CONNECTS" -lt 2 ]; then
-    echo "not ok - fetch opens TCP connection" >&2
-    cat "$TEST_ROOT/logs/error.log" >&2
-    exit 1
-fi
-
-echo "ok - fetch opens TCP connection"
-
-FETCH_HEADERS=$(grep -c "fetch response header received" "$TEST_ROOT/logs/error.log" || true)
-if [ "$FETCH_HEADERS" -lt 2 ]; then
-    echo "not ok - fetch reads response header" >&2
-    cat "$TEST_ROOT/logs/error.log" >&2
-    exit 1
-fi
-
-echo "ok - fetch reads response header"
-
-FETCH_STATUSES=$(grep -c "fetch response status: 204" "$TEST_ROOT/logs/error.log" || true)
-if [ "$FETCH_STATUSES" -lt 2 ]; then
-    echo "not ok - fetch sends request body" >&2
-    cat "$TEST_ROOT/logs/error.log" >&2
-    exit 1
-fi
-
-echo "ok - fetch sends request body"
+for test_file in \
+    test_lua_web.py \
+    test_requests.py \
+    test_response.py \
+    test_stream.py \
+    test_fetch.py
+do
+    TEST_NGINX_PORT="$PORT" \
+    TEST_NGINX_ROOT="$TEST_ROOT" \
+        python3 "$MODULE_DIR/tests/$test_file"
+done

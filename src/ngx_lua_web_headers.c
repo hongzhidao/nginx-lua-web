@@ -32,9 +32,6 @@ static void ngx_lua_web_headers_copy_from_table(lua_State *L,
     ngx_lua_web_headers_t *headers, int table, int arg);
 static void ngx_lua_web_headers_copy_entry(lua_State *L,
     ngx_lua_web_headers_t *headers, int key, int value, int arg);
-static void ngx_lua_web_headers_set(lua_State *L,
-    ngx_lua_web_headers_t *headers, const char *name, size_t name_len,
-    const char *value, size_t value_len);
 static ngx_int_t ngx_lua_web_headers_reserve(lua_State *L,
     ngx_lua_web_headers_t *headers, size_t n);
 static ngx_int_t ngx_lua_web_headers_dup_lower(lua_State *L, ngx_str_t *dst,
@@ -259,7 +256,7 @@ ngx_lua_web_headers_copy_entry(lua_State *L, ngx_lua_web_headers_t *headers,
 }
 
 
-static void
+void
 ngx_lua_web_headers_set(lua_State *L, ngx_lua_web_headers_t *headers,
     const char *name, size_t name_len, const char *value, size_t value_len)
 {
