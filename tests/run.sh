@@ -334,6 +334,89 @@ end)
 return app
 EOF
 
+cat > "$TEST_ROOT/app-response-new.lua" <<'EOF'
+local function text_stream(text)
+    return ReadableStream.new({
+        start = function(controller)
+            controller:enqueue(text)
+            controller:close()
+        end,
+    })
+end
+
+local app = App.new()
+
+app:all("*", function()
+    local ok, err = pcall(function()
+        local headers = Headers.new({ ["X-Test"] = "one" })
+        local body = ReadableStream.new({
+            start = function(controller)
+                controller:enqueue("response body")
+                controller:close()
+            end,
+        })
+
+        Response.new()
+        Response.new({})
+        Response.new({ headers = headers })
+        Response.new({ headers = { ["X-Test"] = "two" } })
+        Response.new({ status = 201 })
+        Response.new({ status = 204, headers = headers, body = body })
+
+        local empty = Response.new()
+        if empty.status ~= 200 then
+            error("default response status mismatch")
+        end
+        if empty.headers == nil then
+            error("default response headers missing")
+        end
+        if empty.body ~= nil then
+            error("default response body should be nil")
+        end
+
+        local with_body = Response.new({
+            status = 202,
+            headers = headers,
+            body = body,
+        })
+        if with_body.status ~= 202 then
+            error("response status mismatch")
+        end
+        if with_body.headers == nil then
+            error("response headers missing")
+        end
+        if with_body.headers == headers then
+            error("response headers were not copied")
+        end
+        if with_body.body ~= body then
+            error("response body stream mismatch")
+        end
+
+        local bad_status_ok = pcall(function()
+            Response.new({ status = 99 })
+        end)
+        if bad_status_ok then
+            error("Response.new accepted invalid status")
+        end
+
+        local bad_body_ok = pcall(function()
+            Response.new({ body = "bad" })
+        end)
+        if bad_body_ok then
+            error("Response.new accepted invalid body")
+        end
+    end)
+
+    if not ok then
+        return { 500, text_stream(err) }
+    end
+
+    return { 200, text_stream("Response.new") }
+end)
+
+return app
+EOF
+
 cat > "$TEST_ROOT/conf/nginx.conf" <<EOF
 worker_processes  1;
 error_log  logs/error.log notice;
@@ -383,6 +466,10 @@ http {
 
         location /lua-request-headers-new {
             lua_web_file $TEST_ROOT/app-request-headers-new.lua;
+        }
+
+        location /lua-response-new {
+            lua_web_file $TEST_ROOT/app-response-new.lua;
         }
     }
 }

@@ -221,6 +221,16 @@ def test_request_and_headers_new():
         raise AssertionError(f"expected constructor body, got {body!r}")
 
 
+def test_response_new():
+    status, body = request("/lua-response-new")
+
+    if status != 200:
+        raise AssertionError(f"expected 200, got {status}: {body!r}")
+
+    if body != "Response.new":
+        raise AssertionError(f"expected Response.new body, got {body!r}")
+
+
 def main():
     tests = [
         ("lua handler returns status and stream",
@@ -243,6 +253,8 @@ def main():
          test_readable_stream_pull_source),
         ("Request.new and Headers.new",
          test_request_and_headers_new),
+        ("Response.new",
+         test_response_new),
     ]
 
     try:
