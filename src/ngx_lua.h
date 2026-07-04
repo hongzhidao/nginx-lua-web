@@ -20,6 +20,7 @@ typedef void (*ngx_lua_resume_pt)(void *data);
 
 struct ngx_lua_ctx_s {
     lua_State          *thread;
+    ngx_pool_t         *pool;
     ngx_lua_resume_pt   resume;
     void               *data;
 };

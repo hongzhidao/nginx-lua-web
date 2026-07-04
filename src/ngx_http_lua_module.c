@@ -525,6 +525,7 @@ ngx_http_lua_create_main_conf(ngx_conf_t *cf)
 
     ngx_lua_disable_coroutine(conf->lua);
     ngx_lua_app_register(conf->lua);
+    ngx_lua_web_stream_register(conf->lua);
 
     cln->handler = ngx_http_lua_cleanup_vm;
     cln->data = conf;

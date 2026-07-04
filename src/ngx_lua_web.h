@@ -28,6 +28,7 @@ struct ngx_lua_web_stream_source_s {
 
 ngx_lua_web_stream_t *ngx_lua_web_stream_create(lua_State *L,
     ngx_pool_t *pool);
+void ngx_lua_web_stream_register(lua_State *L);
 void ngx_lua_web_stream_set_source(ngx_lua_web_stream_t *stream,
     ngx_lua_web_stream_source_t *source);
 void ngx_lua_web_stream_enqueue_bufs(ngx_lua_web_stream_t *stream,

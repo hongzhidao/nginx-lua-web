@@ -24,6 +24,7 @@ ngx_lua_create_coroutine(lua_State *L, ngx_pool_t *pool)
     }
 
     ctx->thread = co;
+    ctx->pool = pool;
     ngx_lua_set_ctx(co, ctx);
 
     return co;
@@ -44,6 +45,7 @@ ngx_lua_destroy_coroutine(lua_State *L, lua_State *from)
 
         ctx->resume = NULL;
         ctx->data = NULL;
+        ctx->pool = NULL;
     }
 
     (void) lua_closethread(L, from);

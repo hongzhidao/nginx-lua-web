@@ -113,6 +113,82 @@ end)
 return app
 EOF
 
+cat > "$TEST_ROOT/app-stream.lua" <<'EOF'
+local app = App.new()
+
+app:all("*", function()
+    if Stream ~= nil then
+        return { 500, "Stream global is exposed" }
+    end
+
+    local stream = ReadableStream.new({
+        start = function(controller)
+            controller:enqueue("hello ")
+            controller:enqueue("from lua stream")
+            controller:close()
+        end,
+    })
+
+    if stream.enqueue ~= nil then
+        return { 500, "ReadableStream exposes enqueue" }
+    end
+
+    local reader = stream:getReader()
+    local chunks = {}
+
+    while true do
+        local result = reader:read()
+        if result.done then
+            break
+        end
+
+        chunks[#chunks + 1] = result.value
+    end
+
+    return { 200, table.concat(chunks) }
+end)
+
+return app
+EOF
+
+cat > "$TEST_ROOT/app-stream-pull.lua" <<'EOF'
+local app = App.new()
+
+app:all("*", function()
+    local pulls = 0
+
+    local stream = ReadableStream.new({
+        pull = function(controller)
+            pulls = pulls + 1
+
+            if pulls == 1 then
+                controller:enqueue("pulled ")
+                return
+            end
+
+            controller:enqueue("from source")
+            controller:close()
+        end,
+    })
+
+    local reader = stream:getReader()
+    local chunks = {}
+
+    while true do
+        local result = reader:read()
+        if result.done then
+            break
+        end
+
+        chunks[#chunks + 1] = result.value
+    end
+
+    return { 200, table.concat(chunks) }
+end)
+
+return app
+EOF
+
 cat > "$TEST_ROOT/conf/nginx.conf" <<EOF
 worker_processes  1;
 error_log  logs/error.log notice;
@@ -146,6 +222,14 @@ http {
 
         location /lua-body {
             lua_web_file $TEST_ROOT/app-body.lua;
+        }
+
+        location /lua-stream {
+            lua_web_file $TEST_ROOT/app-stream.lua;
+        }
+
+        location /lua-stream-pull {
+            lua_web_file $TEST_ROOT/app-stream-pull.lua;
         }
     }
 }
