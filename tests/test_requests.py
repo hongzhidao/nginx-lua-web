@@ -33,6 +33,16 @@ def test_request_new():
         raise AssertionError(f"expected constructor body, got {body!r}")
 
 
+def test_request_without_body_has_nil_body():
+    status, body = request("/lua-request-no-body")
+
+    if status != 200:
+        raise AssertionError(f"expected 200, got {status}: {body!r}")
+
+    if body != "request body nil":
+        raise AssertionError(f"expected nil request body, got {body!r}")
+
+
 def main():
     return run_tests("Request API behavior", [
         ("request body reader reads body",
@@ -41,6 +51,8 @@ def main():
          test_request_body_reader_yields_until_body_arrives),
         ("Request.new",
          test_request_new),
+        ("request without body has nil body",
+         test_request_without_body_has_nil_body),
     ])
 
 

@@ -17,6 +17,7 @@ static int ngx_lua_web_request_gc(lua_State *L);
 static void ngx_lua_web_request_init_body(lua_State *L,
     ngx_lua_web_request_t *request, int init_index, int arg,
     int request_index);
+static ngx_uint_t ngx_lua_web_request_method_forbids_body(ngx_str_t *method);
 static void ngx_lua_web_request_init_string_field(lua_State *L,
     ngx_str_t *field, int init_index, const char *name, int arg);
 static void ngx_lua_web_request_free_string(lua_State *L, ngx_str_t *field);
@@ -210,6 +211,13 @@ ngx_lua_web_request_init(lua_State *L, ngx_lua_web_request_t *request,
                                           "method", arg);
     ngx_lua_web_request_init_body(L, request, init_index, arg, request_index);
 
+    if (request->body != NULL
+        && ngx_lua_web_request_method_forbids_body(&request->method))
+    {
+        (void) luaL_argerror(L, arg,
+                             "GET and HEAD requests cannot have a body");
+    }
+
     lua_getfield(L, init_index, "headers");
 
     if (lua_isnil(L, -1)) {
@@ -247,6 +255,21 @@ ngx_lua_web_request_init_body(lua_State *L, ngx_lua_web_request_t *request,
 
     request->body = body;
     lua_setiuservalue(L, request_index, 2);
+}
+
+
+static ngx_uint_t
+ngx_lua_web_request_method_forbids_body(ngx_str_t *method)
+{
+    if (method->len == 3 && ngx_strncmp(method->data, "GET", 3) == 0) {
+        return 1;
+    }
+
+    if (method->len == 4 && ngx_strncmp(method->data, "HEAD", 4) == 0) {
+        return 1;
+    }
+
+    return 0;
 }
 
 

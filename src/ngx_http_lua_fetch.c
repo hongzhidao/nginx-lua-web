@@ -16,32 +16,40 @@
 #define NGX_HTTP_LUA_FETCH_SEND_TIMEOUT     5000
 #define NGX_HTTP_LUA_FETCH_READ_TIMEOUT     5000
 #define NGX_HTTP_LUA_FETCH_RESPONSE_BUFFER  4096
+#define NGX_HTTP_LUA_FETCH_RESET_CONTENT    205
 
 
 typedef struct ngx_http_lua_fetch_s  ngx_http_lua_fetch_t;
 
 
 struct ngx_http_lua_fetch_s {
+    /* Core fetch state. */
     ngx_lua_ctx_t              *ctx;
     ngx_http_request_t         *r;
     ngx_lua_web_request_t      *request;
     ngx_lua_web_response_t     *response;
-    ngx_lua_web_stream_t       *response_body;
     ngx_pool_t                 *pool;
     ngx_peer_connection_t       peer;
     ngx_sockaddr_t              sockaddr;
+    ngx_str_t                   peer_name;
+
+    /* Buffers and errors. */
     ngx_buf_t                  *write_buf;
     ngx_buf_t                  *read_buf;
-    ngx_http_chunked_t          chunked;
-    ngx_str_t                   peer_name;
     ngx_str_t                   error;
+
+    /* Response body source state. */
+    ngx_lua_web_stream_t       *response_body;
+    ngx_http_chunked_t          chunked;
     off_t                       content_length_n;
     off_t                       body_read;
-    unsigned                    request_sent:1;
-    unsigned                    request_body_sent:1;
     unsigned                    chunked_body:1;
     unsigned                    no_body:1;
     unsigned                    body_done:1;
+
+    /* Request/connection state. */
+    unsigned                    request_sent:1;
+    unsigned                    request_body_sent:1;
     unsigned                    failed:1;
 };
 
@@ -1320,6 +1328,7 @@ ngx_http_lua_fetch_parse_response_headers(lua_State *L,
     }
 
     if (status == NGX_HTTP_NO_CONTENT
+        || status == NGX_HTTP_LUA_FETCH_RESET_CONTENT
         || status == NGX_HTTP_NOT_MODIFIED
         || fetch->content_length_n == 0)
     {

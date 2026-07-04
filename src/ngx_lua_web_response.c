@@ -9,6 +9,9 @@
 
 
 #define NGX_LUA_WEB_RESPONSE_METATABLE  "ngx_lua_web.Response"
+#define NGX_LUA_WEB_HTTP_NO_CONTENT     204
+#define NGX_LUA_WEB_HTTP_RESET_CONTENT  205
+#define NGX_LUA_WEB_HTTP_NOT_MODIFIED   304
 
 
 static int ngx_lua_web_response_new(lua_State *L);
@@ -21,6 +24,8 @@ static void ngx_lua_web_response_init_status(lua_State *L,
 static void ngx_lua_web_response_init_body(lua_State *L,
     ngx_lua_web_response_t *response, int init_index, int arg,
     int response_index);
+static ngx_uint_t ngx_lua_web_response_has_null_body_status(
+    ngx_uint_t status);
 
 
 static const luaL_Reg  ngx_lua_web_response_global_methods[] = {
@@ -223,8 +228,8 @@ ngx_lua_web_response_init_status(lua_State *L,
     }
 
     status = lua_tointeger(L, -1);
-    if (status < 100 || status > 599) {
-        luaL_argerror(L, arg, "status must be from 100 to 599");
+    if (status < 200 || status > 599) {
+        luaL_argerror(L, arg, "status must be from 200 to 599");
     }
 
     response->status = (ngx_uint_t) status;
@@ -251,6 +256,19 @@ ngx_lua_web_response_init_body(lua_State *L,
         luaL_argerror(L, arg, "body must be a ReadableStream");
     }
 
+    if (ngx_lua_web_response_has_null_body_status(response->status)) {
+        luaL_argerror(L, arg, "body is not allowed for this status");
+    }
+
     response->body = body;
     lua_setiuservalue(L, response_index, 2);
+}
+
+
+static ngx_uint_t
+ngx_lua_web_response_has_null_body_status(ngx_uint_t status)
+{
+    return status == NGX_LUA_WEB_HTTP_NO_CONTENT
+           || status == NGX_LUA_WEB_HTTP_RESET_CONTENT
+           || status == NGX_LUA_WEB_HTTP_NOT_MODIFIED;
 }

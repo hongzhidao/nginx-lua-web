@@ -12,6 +12,7 @@ static ngx_lua_web_stream_t *ngx_http_lua_request_body_stream_create(
     ngx_http_request_t *r, ngx_http_lua_ctx_t *ctx);
 static ngx_lua_web_stream_t *ngx_http_lua_request_body_get(
     ngx_http_request_t *r);
+static ngx_uint_t ngx_http_lua_request_has_body(ngx_http_request_t *r);
 static ngx_int_t ngx_http_lua_request_body_read(ngx_http_request_t *r,
     ngx_lua_web_stream_t *stream);
 static void ngx_http_lua_request_body_read_handler(ngx_http_request_t *r);
@@ -56,14 +57,16 @@ ngx_http_lua_request_create(ngx_http_request_t *r, ngx_http_lua_ctx_t *ctx)
         return NULL;
     }
 
-    body = ngx_http_lua_request_body_stream_create(r, ctx);
-    if (body == NULL) {
-        lua_settop(ctx->co, top);
-        return NULL;
-    }
+    if (ngx_http_lua_request_has_body(r)) {
+        body = ngx_http_lua_request_body_stream_create(r, ctx);
+        if (body == NULL) {
+            lua_settop(ctx->co, top);
+            return NULL;
+        }
 
-    request->body = body;
-    lua_setiuservalue(ctx->co, request_index, 2);
+        request->body = body;
+        lua_setiuservalue(ctx->co, request_index, 2);
+    }
 
     return request;
 }
@@ -110,6 +113,13 @@ ngx_http_lua_request_body_get(ngx_http_request_t *r)
     }
 
     return ctx->request->body;
+}
+
+
+static ngx_uint_t
+ngx_http_lua_request_has_body(ngx_http_request_t *r)
+{
+    return r->headers_in.chunked || r->headers_in.content_length_n > 0;
 }
 
 

@@ -165,6 +165,20 @@ app:all("*", function()
         if with_body.body ~= body then
             error("request body stream mismatch")
         end
+
+        local bad_default_body_ok = pcall(function()
+            Request.new({ body = body })
+        end)
+        if bad_default_body_ok then
+            error("Request.new accepted default GET body")
+        end
+
+        local bad_head_body_ok = pcall(function()
+            Request.new({ method = "HEAD", body = body })
+        end)
+        if bad_head_body_ok then
+            error("Request.new accepted HEAD body")
+        end
     end)
 
     if not ok then
@@ -177,6 +191,35 @@ app:all("*", function()
     return Response.new({
         status = 200,
         body = text_stream("Request.new"),
+    })
+end)
+
+return app
+EOF
+
+cat > "$TEST_ROOT/app-request-no-body.lua" <<'EOF'
+local function text_stream(text)
+    return ReadableStream.new({
+        start = function(controller)
+            controller:enqueue(text)
+            controller:close()
+        end,
+    })
+end
+
+local app = App.new()
+
+app:all("*", function(request)
+    if request.body ~= nil then
+        return Response.new({
+            status = 500,
+            body = text_stream("request body should be nil"),
+        })
+    end
+
+    return Response.new({
+        status = 200,
+        body = text_stream("request body nil"),
     })
 end)
 
@@ -245,11 +288,9 @@ app:all("*", function()
         Response.new({})
         Response.new({ headers = { ["X-Test"] = "two" } })
         Response.new({ status = 201 })
-        Response.new({
-            status = 204,
-            headers = { ["X-Test"] = "one" },
-            body = body,
-        })
+        Response.new({ status = 204 })
+        Response.new({ status = 205 })
+        Response.new({ status = 304 })
 
         local empty = Response.new()
         if empty.status ~= 200 then
@@ -282,6 +323,27 @@ app:all("*", function()
         end)
         if bad_status_ok then
             error("Response.new accepted invalid status")
+        end
+
+        local bad_no_content_body_ok = pcall(function()
+            Response.new({ status = 204, body = body })
+        end)
+        if bad_no_content_body_ok then
+            error("Response.new accepted 204 body")
+        end
+
+        local bad_reset_content_body_ok = pcall(function()
+            Response.new({ status = 205, body = body })
+        end)
+        if bad_reset_content_body_ok then
+            error("Response.new accepted 205 body")
+        end
+
+        local bad_not_modified_body_ok = pcall(function()
+            Response.new({ status = 304, body = body })
+        end)
+        if bad_not_modified_body_ok then
+            error("Response.new accepted 304 body")
         end
 
         local bad_body_ok = pcall(function()
@@ -570,6 +632,47 @@ end)
 return app
 EOF
 
+cat > "$TEST_ROOT/app-fetch-no-body.lua" <<'EOF'
+local function text_stream(text)
+    return ReadableStream.new({
+        start = function(controller)
+            controller:enqueue(text)
+            controller:close()
+        end,
+    })
+end
+
+local app = App.new()
+
+app:all("*", function()
+    local response, err = fetch("https://example.test/fetch", {
+        method = "POST",
+        body = text_stream("fetch no body"),
+    })
+
+    if response == nil or response.status ~= 204 then
+        return Response.new({
+            status = 500,
+            body = text_stream(err or "fetch no-body status mismatch"),
+        })
+    end
+
+    if response.body ~= nil then
+        return Response.new({
+            status = 500,
+            body = text_stream("fetch no-body response has body"),
+        })
+    end
+
+    return Response.new({
+        status = 200,
+        body = text_stream("fetch response body nil"),
+    })
+end)
+
+return app
+EOF
+
 cat > "$TEST_ROOT/app-fetch-upstream.lua" <<'EOF'
 local function text_stream(text)
     return ReadableStream.new({
@@ -621,6 +724,13 @@ app:all("*", function(request)
             status = 200,
             headers = { ["X-Fetch-Upstream"] = "ok" },
             body = text_stream(string.rep("x", 262144)),
+        })
+    end
+
+    if body == "fetch no body" then
+        return Response.new({
+            status = 204,
+            headers = { ["X-Fetch-Upstream"] = "ok" },
         })
     end
 
@@ -746,6 +856,10 @@ http {
             lua_web_file $TEST_ROOT/app-request-new.lua;
         }
 
+        location /lua-request-no-body {
+            lua_web_file $TEST_ROOT/app-request-no-body.lua;
+        }
+
         location /lua {
             lua_web_file $TEST_ROOT/app.lua;
         }
@@ -776,6 +890,10 @@ http {
 
         location /lua-fetch-body-after-yield {
             lua_web_file $TEST_ROOT/app-fetch-body-after-yield.lua;
+        }
+
+        location /lua-fetch-no-body {
+            lua_web_file $TEST_ROOT/app-fetch-no-body.lua;
         }
 
         location /fetch-upstream {
