@@ -281,6 +281,49 @@ end)
 return app
 EOF
 
+cat > "$TEST_ROOT/app-fetch-upstream.lua" <<'EOF'
+local function text_stream(text)
+    return ReadableStream.new({
+        start = function(controller)
+            controller:enqueue(text)
+            controller:close()
+        end,
+    })
+end
+
+local app = App.new()
+
+app:all("*", function(request)
+    local chunks = {}
+
+    if request.body ~= nil then
+        local reader = request.body:getReader()
+
+        while true do
+            local result = reader:read()
+            if result.done then
+                break
+            end
+
+            chunks[#chunks + 1] = result.value
+        end
+    end
+
+    local body = table.concat(chunks)
+
+    if body == "init body" or body == "delayed fetch body" then
+        return Response.new({ status = 204 })
+    end
+
+    return Response.new({
+        status = 500,
+        body = text_stream("bad fetch body: " .. body),
+    })
+end)
+
+return app
+EOF
+
 cat > "$TEST_ROOT/app-stream.lua" <<'EOF'
 local function text_stream(text)
     return ReadableStream.new({
@@ -583,7 +626,7 @@ http {
         }
 
         location /fetch-upstream {
-            return 204;
+            lua_web_file $TEST_ROOT/app-fetch-upstream.lua;
         }
 
         location /lua-stream {
@@ -637,3 +680,12 @@ if [ "$FETCH_HEADERS" -lt 2 ]; then
 fi
 
 echo "ok - fetch reads response header"
+
+FETCH_STATUSES=$(grep -c "fetch response status: 204" "$TEST_ROOT/logs/error.log" || true)
+if [ "$FETCH_STATUSES" -lt 2 ]; then
+    echo "not ok - fetch sends request body" >&2
+    cat "$TEST_ROOT/logs/error.log" >&2
+    exit 1
+fi
+
+echo "ok - fetch sends request body"
