@@ -91,6 +91,28 @@ end)
 return app
 EOF
 
+cat > "$TEST_ROOT/app-body.lua" <<'EOF'
+local app = App.new()
+
+app:all("*", function(body)
+    local reader = body:getReader()
+    local chunks = {}
+
+    while true do
+        local result = reader:read()
+        if result.done then
+            break
+        end
+
+        chunks[#chunks + 1] = result.value
+    end
+
+    return { 200, table.concat(chunks) }
+end)
+
+return app
+EOF
+
 cat > "$TEST_ROOT/conf/nginx.conf" <<EOF
 worker_processes  1;
 error_log  logs/error.log notice;
@@ -120,6 +142,10 @@ http {
 
         location /lua-coroutine-disabled {
             lua_web_file $TEST_ROOT/app-coroutine-disabled.lua;
+        }
+
+        location /lua-body {
+            lua_web_file $TEST_ROOT/app-body.lua;
         }
     }
 }

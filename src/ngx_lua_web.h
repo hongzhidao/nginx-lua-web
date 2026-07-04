@@ -26,7 +26,8 @@ struct ngx_lua_web_stream_source_s {
 };
 
 
-ngx_lua_web_stream_t *ngx_lua_web_stream_create(lua_State *L);
+ngx_lua_web_stream_t *ngx_lua_web_stream_create(lua_State *L,
+    ngx_pool_t *pool);
 void ngx_lua_web_stream_set_source(ngx_lua_web_stream_t *stream,
     ngx_lua_web_stream_source_t *source);
 void ngx_lua_web_stream_enqueue_bufs(ngx_lua_web_stream_t *stream,
@@ -35,6 +36,8 @@ ngx_int_t ngx_lua_web_stream_enqueue_string(ngx_lua_web_stream_t *stream,
     ngx_pool_t *pool, u_char *data, size_t len);
 ngx_int_t ngx_lua_web_stream_read(ngx_lua_web_stream_t *stream,
     ngx_pool_t *pool, ngx_str_t *value);
+void ngx_lua_web_stream_close(ngx_lua_web_stream_t *stream);
+void ngx_lua_web_stream_error(ngx_lua_web_stream_t *stream);
 void ngx_lua_web_stream_wait(ngx_lua_web_stream_t *stream,
     ngx_lua_web_stream_wake_pt wake, void *data);
 void ngx_lua_web_stream_wake(ngx_lua_web_stream_t *stream);

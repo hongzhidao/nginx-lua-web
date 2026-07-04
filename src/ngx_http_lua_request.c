@@ -28,7 +28,7 @@ ngx_http_lua_request_body_stream_create(ngx_http_request_t *r)
 
     top = lua_gettop(ctx->co);
 
-    stream = ngx_lua_web_stream_create(ctx->co);
+    stream = ngx_lua_web_stream_create(ctx->co, r->pool);
     if (stream == NULL) {
         return NULL;
     }
@@ -107,6 +107,13 @@ ngx_http_lua_request_body_read_handler(ngx_http_request_t *r)
 
     if (rc == NGX_AGAIN) {
         return;
+    }
+
+    if (rc == NGX_DONE) {
+        ngx_lua_web_stream_close(ctx->request_body);
+
+    } else if (rc == NGX_ERROR) {
+        ngx_lua_web_stream_error(ctx->request_body);
     }
 
     ngx_lua_web_stream_wake(ctx->request_body);
