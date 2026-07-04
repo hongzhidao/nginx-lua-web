@@ -11,6 +11,7 @@
 #include <lauxlib.h>
 #include <lualib.h>
 
+#include "ngx_http_lua.h"
 #include "ngx_lua.h"
 
 
@@ -34,6 +35,7 @@ typedef struct {
 
 
 static ngx_int_t ngx_http_lua_handler(ngx_http_request_t *r);
+static void ngx_http_lua_request_body_handler(ngx_http_request_t *r);
 static ngx_lua_app_t *ngx_http_lua_run_file(ngx_http_request_t *r,
     ngx_http_lua_ctx_t *ctx);
 static ngx_int_t ngx_http_lua_run_handler(ngx_http_request_t *r,
@@ -101,11 +103,7 @@ ngx_module_t  ngx_http_lua_module = {
 static ngx_int_t
 ngx_http_lua_handler(ngx_http_request_t *r)
 {
-    ngx_int_t                  rc;
-    ngx_pool_cleanup_t        *cln;
-    ngx_http_lua_ctx_t        *ctx;
-    ngx_http_lua_main_conf_t  *lmcf;
-    ngx_lua_app_t             *app;
+    ngx_int_t  rc;
 
     if (r != r->main) {
         ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
@@ -113,19 +111,37 @@ ngx_http_lua_handler(ngx_http_request_t *r)
         return NGX_HTTP_INTERNAL_SERVER_ERROR;
     }
 
-    rc = ngx_http_discard_request_body(r);
-    if (rc != NGX_OK) {
+    r->request_body_no_buffering = 1;
+
+    rc = ngx_http_read_client_request_body(r,
+                                           ngx_http_lua_request_body_handler);
+    if (rc >= NGX_HTTP_SPECIAL_RESPONSE) {
         return rc;
     }
 
+    return NGX_DONE;
+}
+
+
+static void
+ngx_http_lua_request_body_handler(ngx_http_request_t *r)
+{
+    ngx_int_t                  rc;
+    ngx_pool_cleanup_t        *cln;
+    ngx_http_lua_ctx_t        *ctx;
+    ngx_http_lua_main_conf_t  *lmcf;
+    ngx_lua_app_t             *app;
+
     ctx = ngx_pcalloc(r->pool, sizeof(ngx_http_lua_ctx_t));
     if (ctx == NULL) {
-        return NGX_HTTP_INTERNAL_SERVER_ERROR;
+        ngx_http_finalize_request(r, NGX_HTTP_INTERNAL_SERVER_ERROR);
+        return;
     }
 
     cln = ngx_pool_cleanup_add(r->pool, 0);
     if (cln == NULL) {
-        return NGX_HTTP_INTERNAL_SERVER_ERROR;
+        ngx_http_finalize_request(r, NGX_HTTP_INTERNAL_SERVER_ERROR);
+        return;
     }
 
     lmcf = ngx_http_get_module_main_conf(r, ngx_http_lua_module);
@@ -141,16 +157,13 @@ ngx_http_lua_handler(ngx_http_request_t *r)
 
     app = ngx_http_lua_run_file(r, ctx);
     if (app == NULL) {
-        return NGX_HTTP_INTERNAL_SERVER_ERROR;
+        ngx_http_finalize_request(r, NGX_HTTP_INTERNAL_SERVER_ERROR);
+        return;
     }
 
     rc = ngx_http_lua_run_handler(r, ctx, app);
 
-    if (rc == NGX_ERROR) {
-        return NGX_HTTP_INTERNAL_SERVER_ERROR;
-    }
-
-    return rc;
+    ngx_http_finalize_request(r, rc);
 }
 
 
@@ -264,17 +277,21 @@ ngx_http_lua_run_handler(ngx_http_request_t *r, ngx_http_lua_ctx_t *ctx,
         ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
                       "lua_web_file \"%V\" route handler is not a function",
                       &llcf->lua_web_file);
-        return NGX_ERROR;
+        return NGX_HTTP_INTERNAL_SERVER_ERROR;
+    }
+
+    if (ngx_http_lua_request_body_stream_create(r) == NULL) {
+        return NGX_HTTP_INTERNAL_SERVER_ERROR;
     }
 
     nresults = 0;
 
-    rc = lua_resume(co, ctx->main, 0, &nresults);
+    rc = lua_resume(co, ctx->main, 1, &nresults);
 
     if (rc == LUA_OK) {
         rc = ngx_http_lua_read_result(r, co, nresults, &status, &body);
         if (rc != NGX_OK) {
-            return rc;
+            return NGX_HTTP_INTERNAL_SERVER_ERROR;
         }
 
         return ngx_http_lua_send_response(r, status, &body);
@@ -284,14 +301,14 @@ ngx_http_lua_run_handler(ngx_http_request_t *r, ngx_http_lua_ctx_t *ctx,
         ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
                       "lua_web_file \"%V\" route handler yielded",
                       &llcf->lua_web_file);
-        return NGX_ERROR;
+        return NGX_HTTP_INTERNAL_SERVER_ERROR;
     }
 
     ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
                   "lua_web_file \"%V\" route handler failed: %s",
                   &llcf->lua_web_file, lua_tostring(co, -1));
 
-    return NGX_ERROR;
+    return NGX_HTTP_INTERNAL_SERVER_ERROR;
 }
 
 
