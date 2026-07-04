@@ -60,8 +60,35 @@ static ngx_int_t
 ngx_http_lua_request_body_source_pull(ngx_lua_web_stream_t *stream,
     ngx_lua_web_stream_source_t *source)
 {
-    (void) stream;
-    (void) source;
+    ngx_int_t           rc;
+    ngx_http_request_t *r;
 
-    return NGX_OK;
+    r = source->data;
+
+    if (r->request_body->bufs != NULL) {
+        ngx_lua_web_stream_enqueue_bufs(stream, r->request_body->bufs);
+        r->request_body->bufs = NULL;
+        return NGX_OK;
+    }
+
+    if (!r->reading_body) {
+        return NGX_DONE;
+    }
+
+    rc = ngx_http_read_unbuffered_request_body(r);
+    if (rc >= NGX_HTTP_SPECIAL_RESPONSE) {
+        return rc;
+    }
+
+    if (r->request_body->bufs != NULL) {
+        ngx_lua_web_stream_enqueue_bufs(stream, r->request_body->bufs);
+        r->request_body->bufs = NULL;
+        return NGX_OK;
+    }
+
+    if (rc == NGX_OK) {
+        return NGX_DONE;
+    }
+
+    return rc;
 }

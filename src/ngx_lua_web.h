@@ -28,6 +28,12 @@ struct ngx_lua_web_stream_source_s {
 ngx_lua_web_stream_t *ngx_lua_web_stream_create(lua_State *L);
 void ngx_lua_web_stream_set_source(ngx_lua_web_stream_t *stream,
     ngx_lua_web_stream_source_t *source);
+void ngx_lua_web_stream_enqueue_bufs(ngx_lua_web_stream_t *stream,
+    ngx_chain_t *bufs);
+ngx_int_t ngx_lua_web_stream_enqueue_string(ngx_lua_web_stream_t *stream,
+    ngx_pool_t *pool, u_char *data, size_t len);
+ngx_int_t ngx_lua_web_stream_read(ngx_lua_web_stream_t *stream,
+    ngx_pool_t *pool, ngx_str_t *value);
 
 
 #endif /* _NGX_LUA_WEB_H_INCLUDED_ */
