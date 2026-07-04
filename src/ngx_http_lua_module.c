@@ -35,9 +35,8 @@ static ngx_int_t ngx_http_lua_run_handler(ngx_http_request_t *r,
 static ngx_int_t ngx_http_lua_resume_request(ngx_http_request_t *r,
     int nargs);
 static void ngx_http_lua_resume_handler(void *data);
-static ngx_int_t ngx_http_lua_read_result(ngx_http_request_t *r,
-    lua_State *co, int nresults, ngx_uint_t *status,
-    ngx_lua_web_stream_t **stream);
+static ngx_lua_web_response_t *ngx_http_lua_get_response(
+    ngx_http_request_t *r, lua_State *co, int nresults);
 static void ngx_http_lua_cleanup_ctx(void *data);
 static char *ngx_http_lua_load_file(ngx_conf_t *cf,
     ngx_http_lua_loc_conf_t *llcf);
@@ -144,6 +143,8 @@ ngx_http_lua_request_body_handler(ngx_http_request_t *r)
     ctx->app_ref = LUA_NOREF;
     ctx->co_ref = LUA_NOREF;
     ctx->request_ref = LUA_NOREF;
+    ctx->request = NULL;
+    ctx->response = NULL;
 
     cln->handler = ngx_http_lua_cleanup_ctx;
     cln->data = ctx;
@@ -259,7 +260,9 @@ ngx_http_lua_run_handler(ngx_http_request_t *r, ngx_http_lua_ctx_t *ctx,
                                            r->uri.len);
 
     if (handler_ref == LUA_NOREF) {
-        return ngx_http_lua_send_response(r, ctx, NGX_HTTP_NOT_FOUND, NULL);
+        r->headers_out.status = NGX_HTTP_NOT_FOUND;
+        r->headers_out.content_length_n = 0;
+        return ngx_http_send_header(r);
     }
 
     lua_pushvalue(co, 1);
@@ -291,10 +294,9 @@ static ngx_int_t
 ngx_http_lua_resume_request(ngx_http_request_t *r, int nargs)
 {
     int                       nresults, rc;
-    ngx_uint_t                status;
     ngx_http_lua_ctx_t       *ctx;
     ngx_lua_ctx_t            *lctx;
-    ngx_lua_web_stream_t     *stream;
+    ngx_lua_web_response_t   *response;
     ngx_http_lua_loc_conf_t  *llcf;
 
     ctx = ngx_http_get_module_ctx(r, ngx_http_lua_module);
@@ -304,12 +306,14 @@ ngx_http_lua_resume_request(ngx_http_request_t *r, int nargs)
     rc = lua_resume(ctx->co, ctx->main, nargs, &nresults);
 
     if (rc == LUA_OK) {
-        rc = ngx_http_lua_read_result(r, ctx->co, nresults, &status, &stream);
-        if (rc != NGX_OK) {
+        response = ngx_http_lua_get_response(r, ctx->co, nresults);
+        if (response == NULL) {
             return NGX_HTTP_INTERNAL_SERVER_ERROR;
         }
 
-        return ngx_http_lua_send_response(r, ctx, status, stream);
+        ctx->response = response;
+
+        return ngx_http_lua_send_response(r, response);
     }
 
     if (rc == LUA_YIELD) {
@@ -343,52 +347,28 @@ ngx_http_lua_resume_handler(void *data)
 }
 
 
-static ngx_int_t
-ngx_http_lua_read_result(ngx_http_request_t *r, lua_State *co, int nresults,
-    ngx_uint_t *status, ngx_lua_web_stream_t **stream)
+static ngx_lua_web_response_t *
+ngx_http_lua_get_response(ngx_http_request_t *r, lua_State *co, int nresults)
 {
-    int            isnum, table;
-    lua_Integer    code;
+    int                     response_index;
+    ngx_lua_web_response_t *response;
 
     if (nresults < 1) {
         ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
                       "lua handler returned no values");
-        return NGX_ERROR;
+        return NULL;
     }
 
-    table = lua_absindex(co, -nresults);
+    response_index = lua_absindex(co, -nresults);
 
-    if (!lua_istable(co, table)) {
+    response = ngx_lua_web_response_get(co, response_index);
+    if (response == NULL) {
         ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
-                      "lua handler must return { status, stream }");
-        return NGX_ERROR;
+                      "lua handler must return Response");
+        return NULL;
     }
 
-    lua_geti(co, table, 1);
-    code = lua_tointegerx(co, -1, &isnum);
-    lua_pop(co, 1);
-
-    if (!isnum || code < 100 || code > 599) {
-        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
-                      "lua handler returned invalid status");
-        return NGX_ERROR;
-    }
-
-    lua_geti(co, table, 2);
-    *stream = ngx_lua_web_stream_get(co, -1);
-
-    if (*stream == NULL) {
-        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
-                      "lua handler returned invalid stream");
-        lua_pop(co, 1);
-        return NGX_ERROR;
-    }
-
-    *status = (ngx_uint_t) code;
-
-    lua_pop(co, 1);
-
-    return NGX_OK;
+    return response;
 }
 
 
@@ -413,6 +393,7 @@ ngx_http_lua_cleanup_ctx(void *data)
     }
 
     ctx->request = NULL;
+    ctx->response = NULL;
 
     if (ctx->co_ref != LUA_NOREF) {
         luaL_unref(ctx->main, LUA_REGISTRYINDEX, ctx->co_ref);

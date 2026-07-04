@@ -23,9 +23,7 @@ typedef struct {
     int                                     co_ref;
     int                                     request_ref;
     ngx_lua_web_request_t                  *request;
-    ngx_lua_web_stream_t                   *response_stream;
-    ngx_uint_t                              response_status;
-    unsigned                                response_header_sent:1;
+    ngx_lua_web_response_t                 *response;
 } ngx_http_lua_ctx_t;
 
 
@@ -33,8 +31,7 @@ extern ngx_module_t  ngx_http_lua_module;
 
 
 ngx_int_t ngx_http_lua_send_response(ngx_http_request_t *r,
-    ngx_http_lua_ctx_t *ctx, ngx_uint_t status,
-    ngx_lua_web_stream_t *stream);
+    ngx_lua_web_response_t *response);
 ngx_lua_web_request_t *ngx_http_lua_request_create(ngx_http_request_t *r,
     ngx_http_lua_ctx_t *ctx);
 

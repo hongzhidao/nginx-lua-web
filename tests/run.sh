@@ -50,7 +50,14 @@ end
 
 local app = App.new()
 app:all("*", function()
-    return { 201, text_stream("hello from lua handler") }
+    return Response.new({
+        status = 201,
+        headers = {
+            ["Content-Type"] = "text/plain",
+            ["X-Test"] = "one",
+        },
+        body = text_stream("hello from lua handler"),
+    })
 end)
 return app
 EOF
@@ -67,7 +74,10 @@ end
 
 local app = App.new()
 app:all("/lua-alt", function()
-    return { 202, text_stream("hello from second lua handler") }
+    return Response.new({
+        status = 202,
+        body = text_stream("hello from second lua handler"),
+    })
 end)
 return app
 EOF
@@ -90,10 +100,16 @@ local app = App.new()
 
 app:all("*", function()
     if ok then
-        return { 500, text_stream("App.new accepted an argument") }
+        return Response.new({
+            status = 500,
+            body = text_stream("App.new accepted an argument"),
+        })
     end
 
-    return { 203, text_stream("App.new rejected arguments") }
+    return Response.new({
+        status = 203,
+        body = text_stream("App.new rejected arguments"),
+    })
 end)
 
 return app
@@ -114,14 +130,23 @@ local require_ok = pcall(require, "coroutine")
 
 app:all("*", function()
     if coroutine ~= nil then
-        return { 500, text_stream("coroutine global is available") }
+        return Response.new({
+            status = 500,
+            body = text_stream("coroutine global is available"),
+        })
     end
 
     if require_ok then
-        return { 500, text_stream("coroutine module is available") }
+        return Response.new({
+            status = 500,
+            body = text_stream("coroutine module is available"),
+        })
     end
 
-    return { 200, text_stream("coroutine disabled") }
+    return Response.new({
+        status = 200,
+        body = text_stream("coroutine disabled"),
+    })
 end)
 
 return app
@@ -141,19 +166,31 @@ local app = App.new()
 
 app:all("*", function(request)
     if request.method ~= "POST" then
-        return { 500, text_stream("request method mismatch") }
+        return Response.new({
+            status = 500,
+            body = text_stream("request method mismatch"),
+        })
     end
 
     if request.url ~= "/lua-body" then
-        return { 500, text_stream("request url mismatch") }
+        return Response.new({
+            status = 500,
+            body = text_stream("request url mismatch"),
+        })
     end
 
     if request.headers == nil then
-        return { 500, text_stream("request headers missing") }
+        return Response.new({
+            status = 500,
+            body = text_stream("request headers missing"),
+        })
     end
 
     if request.body == nil then
-        return { 500, text_stream("request body missing") }
+        return Response.new({
+            status = 500,
+            body = text_stream("request body missing"),
+        })
     end
 
     local reader = request.body:getReader()
@@ -168,7 +205,10 @@ app:all("*", function(request)
         chunks[#chunks + 1] = result.value
     end
 
-    return { 200, text_stream(table.concat(chunks)) }
+    return Response.new({
+        status = 200,
+        body = text_stream(table.concat(chunks)),
+    })
 end)
 
 return app
@@ -178,7 +218,10 @@ cat > "$TEST_ROOT/app-body-stream.lua" <<'EOF'
 local app = App.new()
 
 app:all("*", function(request)
-    return { 200, request.body }
+    return Response.new({
+        status = 200,
+        body = request.body,
+    })
 end)
 
 return app
@@ -198,7 +241,10 @@ local app = App.new()
 
 app:all("*", function()
     if Stream ~= nil then
-        return { 500, text_stream("Stream global is exposed") }
+        return Response.new({
+            status = 500,
+            body = text_stream("Stream global is exposed"),
+        })
     end
 
     local stream = ReadableStream.new({
@@ -210,10 +256,16 @@ app:all("*", function()
     })
 
     if stream.enqueue ~= nil then
-        return { 500, text_stream("ReadableStream exposes enqueue") }
+        return Response.new({
+            status = 500,
+            body = text_stream("ReadableStream exposes enqueue"),
+        })
     end
 
-    return { 200, stream }
+    return Response.new({
+        status = 200,
+        body = stream,
+    })
 end)
 
 return app
@@ -239,7 +291,10 @@ app:all("*", function()
         end,
     })
 
-    return { 200, stream }
+    return Response.new({
+        status = 200,
+        body = stream,
+    })
 end)
 
 return app
@@ -325,10 +380,16 @@ app:all("*", function()
     end)
 
     if not ok then
-        return { 500, text_stream(err) }
+        return Response.new({
+            status = 500,
+            body = text_stream(err),
+        })
     end
 
-    return { 200, text_stream("Request.new and Headers.new") }
+    return Response.new({
+        status = 200,
+        body = text_stream("Request.new and Headers.new"),
+    })
 end)
 
 return app
@@ -408,10 +469,17 @@ app:all("*", function()
     end)
 
     if not ok then
-        return { 500, text_stream(err) }
+        return Response.new({
+            status = 500,
+            body = text_stream(err),
+        })
     end
 
-    return { 200, text_stream("Response.new") }
+    return Response.new({
+        status = 200,
+        headers = { ["X-Response-Test"] = "ok" },
+        body = text_stream("Response.new"),
+    })
 end)
 
 return app

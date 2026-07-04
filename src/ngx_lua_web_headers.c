@@ -87,6 +87,28 @@ ngx_lua_web_headers_get(lua_State *L, int index)
 }
 
 
+size_t
+ngx_lua_web_headers_count(ngx_lua_web_headers_t *headers)
+{
+    return headers->nelts;
+}
+
+
+ngx_int_t
+ngx_lua_web_headers_get_entry(ngx_lua_web_headers_t *headers, size_t index,
+    ngx_str_t *name, ngx_str_t *value)
+{
+    if (index >= headers->nelts) {
+        return NGX_ERROR;
+    }
+
+    *name = headers->elts[index].name;
+    *value = headers->elts[index].value;
+
+    return NGX_OK;
+}
+
+
 void
 ngx_lua_web_headers_register(lua_State *L)
 {

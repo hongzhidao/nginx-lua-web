@@ -11,6 +11,11 @@ LUA_WEB_PATH = os.environ.get("TEST_LUA_WEB_PATH", "/lua")
 
 
 def request(path, method="GET", body=None, headers=None):
+    status, body, _ = request_with_headers(path, method, body, headers)
+    return status, body
+
+
+def request_with_headers(path, method="GET", body=None, headers=None):
     deadline = time.time() + 5
     last_error = None
 
@@ -21,7 +26,10 @@ def request(path, method="GET", body=None, headers=None):
             conn.request(method, path, body=body, headers=headers or {})
             response = conn.getresponse()
             body = response.read().decode()
-            return response.status, body
+            response_headers = {
+                name.lower(): value for name, value in response.getheaders()
+            }
+            return response.status, body, response_headers
 
         except OSError as exc:
             last_error = exc
@@ -118,7 +126,7 @@ def decode_chunked(data):
     return b"".join(body)
 
 
-def test_lua_web_file_returns_status_and_stream():
+def test_lua_web_file_returns_response():
     status, body = request(LUA_WEB_PATH)
 
     if status != 201:
@@ -126,6 +134,19 @@ def test_lua_web_file_returns_status_and_stream():
 
     if body != "hello from lua handler":
         raise AssertionError(f"expected lua response body, got {body!r}")
+
+
+def test_response_headers_are_sent():
+    status, _, headers = request_with_headers(LUA_WEB_PATH)
+
+    if status != 201:
+        raise AssertionError(f"expected 201, got {status}")
+
+    if headers.get("content-type") != "text/plain":
+        raise AssertionError("expected response content-type header")
+
+    if headers.get("x-test") != "one":
+        raise AssertionError("expected response x-test header")
 
 
 def test_lua_web_file_keeps_location_refs_separate():
@@ -222,7 +243,7 @@ def test_request_and_headers_new():
 
 
 def test_response_new():
-    status, body = request("/lua-response-new")
+    status, body, headers = request_with_headers("/lua-response-new")
 
     if status != 200:
         raise AssertionError(f"expected 200, got {status}: {body!r}")
@@ -230,11 +251,16 @@ def test_response_new():
     if body != "Response.new":
         raise AssertionError(f"expected Response.new body, got {body!r}")
 
+    if headers.get("x-response-test") != "ok":
+        raise AssertionError("expected Response.new header")
+
 
 def main():
     tests = [
-        ("lua handler returns status and stream",
-         test_lua_web_file_returns_status_and_stream),
+        ("lua handler returns Response",
+         test_lua_web_file_returns_response),
+        ("Response headers are sent",
+         test_response_headers_are_sent),
         ("location refs stay separate",
          test_lua_web_file_keeps_location_refs_separate),
         ("App.new rejects arguments",
