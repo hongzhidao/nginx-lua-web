@@ -11,6 +11,8 @@ ngx_lua_module_src="$ngx_addon_dir/src/ngx_http_lua_module.c \
     $ngx_addon_dir/src/ngx_lua.c \
     $ngx_addon_dir/src/ngx_lua_app.c \
     $ngx_addon_dir/src/ngx_lua_web_stream.c \
+    $ngx_addon_dir/src/ngx_lua_web_headers.c \
+    $ngx_addon_dir/src/ngx_lua_web_request.c \
     $ngx_addon_dir/src/ngx_http_lua_request.c \
     $ngx_addon_dir/src/ngx_http_lua_response.c"
 
