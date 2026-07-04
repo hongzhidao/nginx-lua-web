@@ -31,6 +31,9 @@ typedef struct {
 extern ngx_module_t  ngx_http_lua_module;
 
 
+ngx_int_t ngx_http_lua_send_response(ngx_http_request_t *r,
+    ngx_http_lua_ctx_t *ctx, ngx_uint_t status,
+    ngx_lua_web_stream_t *stream);
 ngx_lua_web_stream_t *ngx_http_lua_request_body_stream_create(
     ngx_http_request_t *r);
 
