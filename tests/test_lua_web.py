@@ -64,12 +64,14 @@ def delayed_body_request(path, payload):
         status_line = head.splitlines()[0].decode()
         status = int(status_line.split()[1])
         content_length = None
+        chunked = False
 
         for line in head.splitlines()[1:]:
             name, _, value = line.partition(b":")
             if name.lower() == b"content-length":
                 content_length = int(value.strip())
-                break
+            elif name.lower() == b"transfer-encoding":
+                chunked = b"chunked" in value.lower()
 
         if content_length is not None:
             while len(response_body) < content_length:
@@ -84,10 +86,39 @@ def delayed_body_request(path, payload):
                     break
                 response_body += chunk
 
+    if chunked:
+        response_body = decode_chunked(response_body)
+
     return status, response_body.decode()
 
 
-def test_lua_web_file_returns_status_and_text():
+def decode_chunked(data):
+    pos = 0
+    body = []
+
+    while True:
+        line_end = data.find(b"\r\n", pos)
+        if line_end == -1:
+            raise AssertionError("incomplete chunked response")
+
+        size_line = data[pos:line_end].split(b";", 1)[0]
+        size = int(size_line, 16)
+        pos = line_end + 2
+
+        if size == 0:
+            break
+
+        body.append(data[pos:pos + size])
+        pos += size
+
+        if data[pos:pos + 2] != b"\r\n":
+            raise AssertionError("invalid chunked response")
+        pos += 2
+
+    return b"".join(body)
+
+
+def test_lua_web_file_returns_status_and_stream():
     status, body = request(LUA_WEB_PATH)
 
     if status != 201:
@@ -149,6 +180,17 @@ def test_request_body_reader_yields_until_body_arrives():
         raise AssertionError(f"expected delayed request body, got {body!r}")
 
 
+def test_response_stream_waits_for_request_body():
+    payload = "streamed request body"
+    status, body = delayed_body_request("/lua-body-stream", payload)
+
+    if status != 200:
+        raise AssertionError(f"expected 200, got {status}: {body!r}")
+
+    if body != payload:
+        raise AssertionError(f"expected streamed request body, got {body!r}")
+
+
 def test_readable_stream_new_and_controller_enqueue():
     status, body = request("/lua-stream")
 
@@ -171,8 +213,8 @@ def test_readable_stream_pull_source():
 
 def main():
     tests = [
-        ("lua handler returns status and text",
-         test_lua_web_file_returns_status_and_text),
+        ("lua handler returns status and stream",
+         test_lua_web_file_returns_status_and_stream),
         ("location refs stay separate",
          test_lua_web_file_keeps_location_refs_separate),
         ("App.new rejects arguments",
@@ -183,6 +225,8 @@ def main():
          test_request_body_readable_stream_reader_reads_body),
         ("request body reader yields until body arrives",
          test_request_body_reader_yields_until_body_arrives),
+        ("response stream waits for request body",
+         test_response_stream_waits_for_request_body),
         ("ReadableStream.new and controller enqueue",
          test_readable_stream_new_and_controller_enqueue),
         ("ReadableStream pull source",

@@ -39,22 +39,49 @@ mkdir -p "$TEST_ROOT/proxy_temp" "$TEST_ROOT/fastcgi_temp"
 mkdir -p "$TEST_ROOT/uwsgi_temp" "$TEST_ROOT/scgi_temp"
 
 cat > "$TEST_ROOT/app.lua" <<'EOF'
+local function text_stream(text)
+    return ReadableStream.new({
+        start = function(controller)
+            controller:enqueue(text)
+            controller:close()
+        end,
+    })
+end
+
 local app = App.new()
 app:all("*", function()
-    return { 201, "hello from lua handler" }
+    return { 201, text_stream("hello from lua handler") }
 end)
 return app
 EOF
 
 cat > "$TEST_ROOT/app-alt.lua" <<'EOF'
+local function text_stream(text)
+    return ReadableStream.new({
+        start = function(controller)
+            controller:enqueue(text)
+            controller:close()
+        end,
+    })
+end
+
 local app = App.new()
 app:all("/lua-alt", function()
-    return { 202, "hello from second lua handler" }
+    return { 202, text_stream("hello from second lua handler") }
 end)
 return app
 EOF
 
 cat > "$TEST_ROOT/app-args.lua" <<'EOF'
+local function text_stream(text)
+    return ReadableStream.new({
+        start = function(controller)
+            controller:enqueue(text)
+            controller:close()
+        end,
+    })
+end
+
 local ok = pcall(function()
     App.new("bad")
 end)
@@ -63,35 +90,53 @@ local app = App.new()
 
 app:all("*", function()
     if ok then
-        return { 500, "App.new accepted an argument" }
+        return { 500, text_stream("App.new accepted an argument") }
     end
 
-    return { 203, "App.new rejected arguments" }
+    return { 203, text_stream("App.new rejected arguments") }
 end)
 
 return app
 EOF
 
 cat > "$TEST_ROOT/app-coroutine-disabled.lua" <<'EOF'
+local function text_stream(text)
+    return ReadableStream.new({
+        start = function(controller)
+            controller:enqueue(text)
+            controller:close()
+        end,
+    })
+end
+
 local app = App.new()
 local require_ok = pcall(require, "coroutine")
 
 app:all("*", function()
     if coroutine ~= nil then
-        return { 500, "coroutine global is available" }
+        return { 500, text_stream("coroutine global is available") }
     end
 
     if require_ok then
-        return { 500, "coroutine module is available" }
+        return { 500, text_stream("coroutine module is available") }
     end
 
-    return { 200, "coroutine disabled" }
+    return { 200, text_stream("coroutine disabled") }
 end)
 
 return app
 EOF
 
 cat > "$TEST_ROOT/app-body.lua" <<'EOF'
+local function text_stream(text)
+    return ReadableStream.new({
+        start = function(controller)
+            controller:enqueue(text)
+            controller:close()
+        end,
+    })
+end
+
 local app = App.new()
 
 app:all("*", function(body)
@@ -107,18 +152,37 @@ app:all("*", function(body)
         chunks[#chunks + 1] = result.value
     end
 
-    return { 200, table.concat(chunks) }
+    return { 200, text_stream(table.concat(chunks)) }
+end)
+
+return app
+EOF
+
+cat > "$TEST_ROOT/app-body-stream.lua" <<'EOF'
+local app = App.new()
+
+app:all("*", function(body)
+    return { 200, body }
 end)
 
 return app
 EOF
 
 cat > "$TEST_ROOT/app-stream.lua" <<'EOF'
+local function text_stream(text)
+    return ReadableStream.new({
+        start = function(controller)
+            controller:enqueue(text)
+            controller:close()
+        end,
+    })
+end
+
 local app = App.new()
 
 app:all("*", function()
     if Stream ~= nil then
-        return { 500, "Stream global is exposed" }
+        return { 500, text_stream("Stream global is exposed") }
     end
 
     local stream = ReadableStream.new({
@@ -130,22 +194,10 @@ app:all("*", function()
     })
 
     if stream.enqueue ~= nil then
-        return { 500, "ReadableStream exposes enqueue" }
+        return { 500, text_stream("ReadableStream exposes enqueue") }
     end
 
-    local reader = stream:getReader()
-    local chunks = {}
-
-    while true do
-        local result = reader:read()
-        if result.done then
-            break
-        end
-
-        chunks[#chunks + 1] = result.value
-    end
-
-    return { 200, table.concat(chunks) }
+    return { 200, stream }
 end)
 
 return app
@@ -171,19 +223,7 @@ app:all("*", function()
         end,
     })
 
-    local reader = stream:getReader()
-    local chunks = {}
-
-    while true do
-        local result = reader:read()
-        if result.done then
-            break
-        end
-
-        chunks[#chunks + 1] = result.value
-    end
-
-    return { 200, table.concat(chunks) }
+    return { 200, stream }
 end)
 
 return app
@@ -222,6 +262,10 @@ http {
 
         location /lua-body {
             lua_web_file $TEST_ROOT/app-body.lua;
+        }
+
+        location /lua-body-stream {
+            lua_web_file $TEST_ROOT/app-body-stream.lua;
         }
 
         location /lua-stream {

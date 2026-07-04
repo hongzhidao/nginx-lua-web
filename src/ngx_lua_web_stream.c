@@ -183,6 +183,13 @@ ngx_lua_web_stream_create(lua_State *L, ngx_pool_t *pool)
 }
 
 
+ngx_lua_web_stream_t *
+ngx_lua_web_stream_get(lua_State *L, int index)
+{
+    return luaL_testudata(L, index, NGX_LUA_WEB_STREAM_METATABLE);
+}
+
+
 void
 ngx_lua_web_stream_register(lua_State *L)
 {
@@ -474,7 +481,11 @@ ngx_lua_web_stream_lua_source_pull(ngx_lua_web_stream_t *stream,
     lua_rawgeti(L, LUA_REGISTRYINDEX, lua_source->pull_ref);
     lua_rawgeti(L, LUA_REGISTRYINDEX, lua_source->controller_ref);
 
-    lua_call(L, 1, 0);
+    if (lua_pcall(L, 1, 0, 0) != LUA_OK) {
+        lua_pop(L, 1);
+        stream->errored = 1;
+        return NGX_ERROR;
+    }
 
     if (stream->bufs == NULL && !stream->closed && !stream->errored) {
         return NGX_AGAIN;

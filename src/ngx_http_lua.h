@@ -22,6 +22,9 @@ typedef struct {
     int                                     app_ref;
     int                                     co_ref;
     ngx_lua_web_stream_t                   *request_body;
+    ngx_lua_web_stream_t                   *response_stream;
+    ngx_uint_t                              response_status;
+    unsigned                                response_header_sent:1;
 } ngx_http_lua_ctx_t;
 
 
