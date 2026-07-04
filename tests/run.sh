@@ -38,6 +38,14 @@ mkdir -p "$TEST_ROOT/conf" "$TEST_ROOT/logs" "$TEST_ROOT/client_body_temp"
 mkdir -p "$TEST_ROOT/proxy_temp" "$TEST_ROOT/fastcgi_temp"
 mkdir -p "$TEST_ROOT/uwsgi_temp" "$TEST_ROOT/scgi_temp"
 
+cat > "$TEST_ROOT/app.lua" <<'EOF'
+return { 201, "hello from lua" }
+EOF
+
+cat > "$TEST_ROOT/app-alt.lua" <<'EOF'
+return { 202, "hello from second lua" }
+EOF
+
 cat > "$TEST_ROOT/conf/nginx.conf" <<EOF
 worker_processes  1;
 error_log  logs/error.log notice;
@@ -54,7 +62,11 @@ http {
         listen 127.0.0.1:$PORT;
 
         location /lua {
-            lua_web_file /tmp/test.lua;
+            lua_web_file $TEST_ROOT/app.lua;
+        }
+
+        location /lua-alt {
+            lua_web_file $TEST_ROOT/app-alt.lua;
         }
     }
 }
