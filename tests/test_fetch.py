@@ -12,18 +12,29 @@ def test_fetch_returns_response_with_body():
         raise AssertionError(f"expected fetch response body, got {body!r}")
 
 
+def test_fetch_buffers_response_body_while_caller_is_yielded():
+    payload = "release fetch body"
+    status, body = delayed_body_request("/lua-fetch-body-after-yield", payload)
+
+    if status != 200:
+        raise AssertionError(f"expected 200, got {status}: {body!r}")
+
+    if body != "262144:xxx:release fetch body":
+        raise AssertionError(f"expected buffered fetch body, got {body!r}")
+
+
 def test_fetch_opens_tcp_connection():
-    if count_error_log("fetch connected") < 2:
+    if count_error_log("fetch connected") < 3:
         raise AssertionError("expected fetch to open TCP connections")
 
 
 def test_fetch_reads_response_header():
-    if count_error_log("fetch response header received") < 2:
+    if count_error_log("fetch response header received") < 3:
         raise AssertionError("expected fetch to read response headers")
 
 
 def test_fetch_sends_request_body():
-    if count_error_log("fetch response status: 200") < 2:
+    if count_error_log("fetch response status: 200") < 3:
         raise AssertionError("expected fetch to send request bodies")
 
 
@@ -31,6 +42,8 @@ def main():
     return run_tests("fetch API behavior", [
         ("fetch returns Response with body",
          test_fetch_returns_response_with_body),
+        ("fetch buffers response body while caller is yielded",
+         test_fetch_buffers_response_body_while_caller_is_yielded),
         ("fetch opens TCP connection",
          test_fetch_opens_tcp_connection),
         ("fetch reads response header",

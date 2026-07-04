@@ -515,6 +515,61 @@ end)
 return app
 EOF
 
+cat > "$TEST_ROOT/app-fetch-body-after-yield.lua" <<'EOF'
+local function text_stream(text)
+    return ReadableStream.new({
+        start = function(controller)
+            controller:enqueue(text)
+            controller:close()
+        end,
+    })
+end
+
+local function read_body(stream)
+    local reader = stream:getReader()
+    local chunks = {}
+
+    while true do
+        local result = reader:read()
+        if result.done then
+            break
+        end
+
+        chunks[#chunks + 1] = result.value
+    end
+
+    return table.concat(chunks)
+end
+
+local app = App.new()
+
+app:all("*", function(request)
+    local response, err = fetch("https://example.test/fetch", {
+        method = "POST",
+        body = text_stream("yield before fetch body read"),
+    })
+
+    if response == nil or response.status ~= 200 then
+        return Response.new({
+            status = 500,
+            body = text_stream(err or "fetch response status mismatch"),
+        })
+    end
+
+    local request_body = read_body(request.body)
+    local response_body = read_body(response.body)
+
+    return Response.new({
+        status = 200,
+        body = text_stream(tostring(#response_body)
+                           .. ":" .. response_body:sub(1, 3)
+                           .. ":" .. request_body),
+    })
+end)
+
+return app
+EOF
+
 cat > "$TEST_ROOT/app-fetch-upstream.lua" <<'EOF'
 local function text_stream(text)
     return ReadableStream.new({
@@ -558,6 +613,14 @@ app:all("*", function(request)
             status = 200,
             headers = { ["X-Fetch-Upstream"] = "ok" },
             body = text_stream("fetch request response"),
+        })
+    end
+
+    if body == "yield before fetch body read" then
+        return Response.new({
+            status = 200,
+            headers = { ["X-Fetch-Upstream"] = "ok" },
+            body = text_stream(string.rep("x", 262144)),
         })
     end
 
@@ -709,6 +772,10 @@ http {
 
         location /lua-fetch {
             lua_web_file $TEST_ROOT/app-fetch.lua;
+        }
+
+        location /lua-fetch-body-after-yield {
+            lua_web_file $TEST_ROOT/app-fetch-body-after-yield.lua;
         }
 
         location /fetch-upstream {

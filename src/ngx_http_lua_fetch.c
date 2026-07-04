@@ -19,7 +19,6 @@
 
 
 typedef struct ngx_http_lua_fetch_s  ngx_http_lua_fetch_t;
-typedef void (*ngx_http_lua_fetch_event_pt)(ngx_http_lua_fetch_t *fetch);
 
 
 struct ngx_http_lua_fetch_s {
@@ -38,9 +37,6 @@ struct ngx_http_lua_fetch_s {
     ngx_str_t                   error;
     off_t                       content_length_n;
     off_t                       body_read;
-    const char                 *timeout_error;
-    ngx_http_lua_fetch_event_pt read_event_handler;
-    ngx_http_lua_fetch_event_pt write_event_handler;
     unsigned                    request_sent:1;
     unsigned                    request_body_sent:1;
     unsigned                    chunked_body:1;
@@ -59,7 +55,6 @@ static ngx_http_lua_fetch_t *ngx_http_lua_fetch_create(lua_State *L,
 static ngx_int_t ngx_http_lua_fetch_create_request(
     ngx_http_lua_fetch_t *fetch);
 static ngx_int_t ngx_http_lua_fetch_connect(ngx_http_lua_fetch_t *fetch);
-static void ngx_http_lua_fetch_event_handler(ngx_event_t *ev);
 static ngx_int_t ngx_http_lua_fetch_send_request(ngx_http_lua_fetch_t *fetch);
 static ngx_int_t ngx_http_lua_fetch_send_buffer(ngx_http_lua_fetch_t *fetch);
 static ngx_int_t ngx_http_lua_fetch_next_body_buffer(
@@ -68,13 +63,11 @@ static ngx_int_t ngx_http_lua_fetch_create_body_chunk(
     ngx_http_lua_fetch_t *fetch, ngx_str_t *chunk);
 static ngx_int_t ngx_http_lua_fetch_create_last_body_chunk(
     ngx_http_lua_fetch_t *fetch);
-static void ngx_http_lua_fetch_send_request_handler(
-    ngx_http_lua_fetch_t *fetch);
+static void ngx_http_lua_fetch_send_request_handler(ngx_event_t *ev);
 static void ngx_http_lua_fetch_request_body_wake(void *data);
 static ngx_int_t ngx_http_lua_fetch_process_header(
     ngx_http_lua_fetch_t *fetch);
-static void ngx_http_lua_fetch_process_header_handler(
-    ngx_http_lua_fetch_t *fetch);
+static void ngx_http_lua_fetch_process_header_handler(ngx_event_t *ev);
 static ngx_int_t ngx_http_lua_fetch_create_response(
     ngx_http_lua_fetch_t *fetch, u_char *header_end, ngx_uint_t status);
 static ngx_int_t ngx_http_lua_fetch_body_source_pull(
@@ -87,9 +80,7 @@ static ngx_int_t ngx_http_lua_fetch_read_chunked_body(
     ngx_http_lua_fetch_t *fetch, ngx_lua_web_stream_t *stream);
 static ngx_int_t ngx_http_lua_fetch_recv_body(
     ngx_http_lua_fetch_t *fetch);
-static void ngx_http_lua_fetch_process_body_handler(
-    ngx_http_lua_fetch_t *fetch);
-static void ngx_http_lua_fetch_dummy_handler(ngx_http_lua_fetch_t *fetch);
+static void ngx_http_lua_fetch_process_body_handler(ngx_event_t *ev);
 static ngx_int_t ngx_http_lua_fetch_test_connect(ngx_connection_t *c);
 static u_char *ngx_http_lua_fetch_header_end(ngx_buf_t *b);
 static ngx_int_t ngx_http_lua_fetch_parse_status(ngx_http_lua_fetch_t *fetch,
@@ -100,6 +91,7 @@ static ngx_int_t ngx_http_lua_fetch_init_response(lua_State *L,
 static ngx_int_t ngx_http_lua_fetch_init_body(lua_State *L,
     ngx_http_lua_fetch_t *fetch, int response_index,
     ngx_lua_web_response_t *response, u_char *header_end);
+static void ngx_http_lua_fetch_wait_body_pull(ngx_http_lua_fetch_t *fetch);
 static ngx_int_t ngx_http_lua_fetch_parse_response_headers(lua_State *L,
     ngx_http_lua_fetch_t *fetch, ngx_lua_web_response_t *response,
     u_char *header_end, ngx_uint_t status);
@@ -399,14 +391,10 @@ ngx_http_lua_fetch_connect(ngx_http_lua_fetch_t *fetch)
     c = fetch->peer.connection;
 
     c->data = fetch;
-    c->write->handler = ngx_http_lua_fetch_event_handler;
-    c->read->handler = ngx_http_lua_fetch_event_handler;
-
-    fetch->write_event_handler = ngx_http_lua_fetch_send_request_handler;
-    fetch->read_event_handler = ngx_http_lua_fetch_process_header_handler;
+    c->write->handler = ngx_http_lua_fetch_send_request_handler;
+    c->read->handler = ngx_http_lua_fetch_process_header_handler;
 
     if (rc == NGX_AGAIN) {
-        fetch->timeout_error = "fetch connect timed out";
         ngx_add_timer(c->write, NGX_HTTP_LUA_FETCH_CONNECT_TIMEOUT);
         return NGX_AGAIN;
     }
@@ -416,7 +404,7 @@ ngx_http_lua_fetch_connect(ngx_http_lua_fetch_t *fetch)
 
 
 static void
-ngx_http_lua_fetch_event_handler(ngx_event_t *ev)
+ngx_http_lua_fetch_send_request_handler(ngx_event_t *ev)
 {
     ngx_connection_t       *c;
     ngx_http_lua_fetch_t   *fetch;
@@ -425,25 +413,19 @@ ngx_http_lua_fetch_event_handler(ngx_event_t *ev)
     fetch = c->data;
 
     if (ev->timedout) {
-        if (!ev->write && fetch->response_body != NULL) {
-            fetch->read_event_handler(fetch);
-            return;
-        }
-
         ev->timedout = 0;
-        ngx_http_lua_fetch_fail(fetch, fetch->timeout_error != NULL
-                                ? fetch->timeout_error
-                                : "fetch timed out");
+        ngx_http_lua_fetch_fail(fetch, fetch->request_sent
+                                ? "fetch request send timed out"
+                                : "fetch connect timed out");
         ngx_http_lua_fetch_resume(fetch);
         return;
     }
 
-    if (ev->write) {
-        fetch->write_event_handler(fetch);
-
-    } else {
-        fetch->read_event_handler(fetch);
+    if (ngx_http_lua_fetch_send_request(fetch) == NGX_AGAIN) {
+        return;
     }
+
+    ngx_http_lua_fetch_resume(fetch);
 }
 
 
@@ -483,9 +465,8 @@ ngx_http_lua_fetch_send_request(ngx_http_lua_fetch_t *fetch)
         }
     }
 
-    fetch->write_event_handler = ngx_http_lua_fetch_dummy_handler;
-    fetch->read_event_handler = ngx_http_lua_fetch_process_header_handler;
-    fetch->timeout_error = "fetch response header read timed out";
+    c->write->handler = ngx_http_empty_handler;
+    c->read->handler = ngx_http_lua_fetch_process_header_handler;
 
     if (ngx_handle_write_event(c->write, 0) != NGX_OK) {
         ngx_http_lua_fetch_fail(fetch, "fetch request send failed");
@@ -531,9 +512,6 @@ ngx_http_lua_fetch_send_buffer(ngx_http_lua_fetch_t *fetch)
         }
 
         if (n == NGX_AGAIN) {
-            fetch->write_event_handler =
-                                      ngx_http_lua_fetch_send_request_handler;
-            fetch->timeout_error = "fetch request send timed out";
             ngx_add_timer(c->write, NGX_HTTP_LUA_FETCH_SEND_TIMEOUT);
 
             if (ngx_handle_write_event(c->write, 0) != NGX_OK) {
@@ -630,12 +608,13 @@ ngx_http_lua_fetch_create_last_body_chunk(ngx_http_lua_fetch_t *fetch)
 
 
 static void
-ngx_http_lua_fetch_send_request_handler(ngx_http_lua_fetch_t *fetch)
+ngx_http_lua_fetch_request_body_wake(void *data)
 {
-    ngx_int_t  rc;
+    ngx_http_lua_fetch_t  *fetch;
 
-    rc = ngx_http_lua_fetch_send_request(fetch);
-    if (rc == NGX_AGAIN) {
+    fetch = data;
+
+    if (ngx_http_lua_fetch_send_request(fetch) == NGX_AGAIN) {
         return;
     }
 
@@ -644,15 +623,23 @@ ngx_http_lua_fetch_send_request_handler(ngx_http_lua_fetch_t *fetch)
 
 
 static void
-ngx_http_lua_fetch_request_body_wake(void *data)
+ngx_http_lua_fetch_process_header_handler(ngx_event_t *ev)
 {
-    ngx_int_t              rc;
     ngx_http_lua_fetch_t  *fetch;
+    ngx_connection_t      *c;
 
-    fetch = data;
+    c = ev->data;
+    fetch = c->data;
 
-    rc = ngx_http_lua_fetch_send_request(fetch);
-    if (rc == NGX_AGAIN) {
+    if (ev->timedout) {
+        ev->timedout = 0;
+        ngx_http_lua_fetch_fail(fetch,
+                                "fetch response header read timed out");
+        ngx_http_lua_fetch_resume(fetch);
+        return;
+    }
+
+    if (ngx_http_lua_fetch_process_header(fetch) == NGX_AGAIN) {
         return;
     }
 
@@ -730,20 +717,6 @@ ngx_http_lua_fetch_process_header(ngx_http_lua_fetch_t *fetch)
 }
 
 
-static void
-ngx_http_lua_fetch_process_header_handler(ngx_http_lua_fetch_t *fetch)
-{
-    ngx_int_t  rc;
-
-    rc = ngx_http_lua_fetch_process_header(fetch);
-    if (rc == NGX_AGAIN) {
-        return;
-    }
-
-    ngx_http_lua_fetch_resume(fetch);
-}
-
-
 static ngx_int_t
 ngx_http_lua_fetch_create_response(ngx_http_lua_fetch_t *fetch,
     u_char *header_end, ngx_uint_t status)
@@ -802,8 +775,7 @@ ngx_http_lua_fetch_body_source_pull(ngx_lua_web_stream_t *stream,
         return NGX_ERROR;
     }
 
-    fetch->read_event_handler = ngx_http_lua_fetch_process_body_handler;
-    fetch->timeout_error = "fetch response body read timed out";
+    c->read->handler = ngx_http_lua_fetch_process_body_handler;
     ngx_add_timer(c->read, NGX_HTTP_LUA_FETCH_READ_TIMEOUT);
 
     if (ngx_handle_read_event(c->read, 0) != NGX_OK) {
@@ -1059,12 +1031,25 @@ ngx_http_lua_fetch_recv_body(ngx_http_lua_fetch_t *fetch)
 
 
 static void
-ngx_http_lua_fetch_process_body_handler(ngx_http_lua_fetch_t *fetch)
+ngx_http_lua_fetch_process_body_handler(ngx_event_t *ev)
 {
     ngx_int_t                 rc;
     ngx_lua_web_stream_t     *body;
+    ngx_http_lua_fetch_t     *fetch;
+    ngx_connection_t         *c;
+
+    c = ev->data;
+    fetch = c->data;
 
     body = fetch->response_body;
+
+    if (ev->timedout) {
+        ev->timedout = 0;
+        ngx_lua_web_stream_error(body);
+        ngx_http_lua_fetch_close_connection(fetch);
+        ngx_lua_web_stream_wake(body);
+        return;
+    }
 
     rc = ngx_http_lua_fetch_read_body(fetch, body);
     if (rc == NGX_AGAIN) {
@@ -1072,13 +1057,6 @@ ngx_http_lua_fetch_process_body_handler(ngx_http_lua_fetch_t *fetch)
     }
 
     ngx_lua_web_stream_wake(body);
-}
-
-
-static void
-ngx_http_lua_fetch_dummy_handler(ngx_http_lua_fetch_t *fetch)
-{
-    (void) fetch;
 }
 
 
@@ -1240,11 +1218,24 @@ ngx_http_lua_fetch_init_body(lua_State *L, ngx_http_lua_fetch_t *fetch,
     fetch->response_body = body;
 
     lua_setiuservalue(L, response_index, 2);
-
-    fetch->read_event_handler = ngx_http_lua_fetch_process_body_handler;
-    fetch->timeout_error = "fetch response body read timed out";
+    ngx_http_lua_fetch_wait_body_pull(fetch);
 
     return NGX_OK;
+}
+
+
+static void
+ngx_http_lua_fetch_wait_body_pull(ngx_http_lua_fetch_t *fetch)
+{
+    ngx_connection_t  *c;
+
+    c = fetch->peer.connection;
+
+    if (c->read->timer_set) {
+        ngx_del_timer(c->read);
+    }
+
+    c->read->handler = ngx_http_empty_handler;
 }
 
 
