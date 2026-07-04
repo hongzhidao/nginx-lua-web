@@ -59,7 +59,7 @@ static ngx_int_t ngx_lua_web_stream_lua_source_pull(
     ngx_lua_web_stream_t *stream, ngx_lua_web_stream_source_t *source);
 static void ngx_lua_web_stream_lua_source_cleanup(void *data);
 static int ngx_lua_web_stream_reader_read(lua_State *L);
-static int ngx_lua_web_stream_reader_resume(lua_State *L, int status,
+static int ngx_lua_web_stream_reader_continue(lua_State *L, int status,
     lua_KContext ctx);
 static int ngx_lua_web_stream_reader_release_lock(lua_State *L);
 static int ngx_lua_web_stream_reader_gc(lua_State *L);
@@ -710,7 +710,7 @@ ngx_lua_web_stream_reader_read(lua_State *L)
         ctx = ngx_lua_get_ctx(L);
         ngx_lua_web_stream_wait(stream, ngx_lua_web_stream_reader_wake, ctx);
 
-        return lua_yieldk(L, 0, 0, ngx_lua_web_stream_reader_resume);
+        return lua_yieldk(L, 0, 0, ngx_lua_web_stream_reader_continue);
     }
 
     return luaL_error(L, "ReadableStream read failed");
@@ -718,7 +718,7 @@ ngx_lua_web_stream_reader_read(lua_State *L)
 
 
 static int
-ngx_lua_web_stream_reader_resume(lua_State *L, int status,
+ngx_lua_web_stream_reader_continue(lua_State *L, int status,
     lua_KContext ctx)
 {
     ngx_int_t                      rc;

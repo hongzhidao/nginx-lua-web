@@ -212,6 +212,17 @@ def test_response_stream_waits_for_request_body():
         raise AssertionError(f"expected streamed request body, got {body!r}")
 
 
+def test_fetch_returns_true_after_response_header():
+    payload = "delayed fetch body"
+    status, body = delayed_body_request("/lua-fetch", payload)
+
+    if status != 200:
+        raise AssertionError(f"expected 200, got {status}: {body!r}")
+
+    if body != "fetch returned true":
+        raise AssertionError(f"expected fetch response body, got {body!r}")
+
+
 def test_readable_stream_new_and_controller_enqueue():
     status, body = request("/lua-stream")
 
@@ -273,6 +284,8 @@ def main():
          test_request_body_reader_yields_until_body_arrives),
         ("response stream waits for request body",
          test_response_stream_waits_for_request_body),
+        ("fetch returns true after response header",
+         test_fetch_returns_true_after_response_header),
         ("ReadableStream.new and controller enqueue",
          test_readable_stream_new_and_controller_enqueue),
         ("ReadableStream pull source",

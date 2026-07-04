@@ -227,6 +227,60 @@ end)
 return app
 EOF
 
+cat > "$TEST_ROOT/app-fetch.lua" <<'EOF'
+local function text_stream(text)
+    return ReadableStream.new({
+        start = function(controller)
+            controller:enqueue(text)
+            controller:close()
+        end,
+    })
+end
+
+local app = App.new()
+
+app:all("*", function(request)
+    local body = ReadableStream.new({
+        start = function(controller)
+            controller:enqueue("init ")
+            controller:enqueue("body")
+            controller:close()
+        end,
+    })
+
+    local init_ok = fetch("https://example.test/fetch", {
+        method = "POST",
+        headers = {
+            ["X-Test"] = "one",
+        },
+        body = body,
+    })
+
+    if init_ok ~= true then
+        return Response.new({
+            status = 500,
+            body = text_stream("fetch init did not return true"),
+        })
+    end
+
+    local ok = fetch(request)
+
+    if ok ~= true then
+        return Response.new({
+            status = 500,
+            body = text_stream("fetch did not return true"),
+        })
+    end
+
+    return Response.new({
+        status = 200,
+        body = text_stream("fetch returned true"),
+    })
+end)
+
+return app
+EOF
+
 cat > "$TEST_ROOT/app-stream.lua" <<'EOF'
 local function text_stream(text)
     return ReadableStream.new({
@@ -524,6 +578,14 @@ http {
             lua_web_file $TEST_ROOT/app-body-stream.lua;
         }
 
+        location /lua-fetch {
+            lua_web_file $TEST_ROOT/app-fetch.lua;
+        }
+
+        location /fetch-upstream {
+            return 204;
+        }
+
         location /lua-stream {
             lua_web_file $TEST_ROOT/app-stream.lua;
         }
@@ -557,3 +619,21 @@ fi
 "$NGINX" -p "$TEST_ROOT/" -c conf/nginx.conf
 
 TEST_NGINX_PORT="$PORT" python3 "$MODULE_DIR/tests/test_lua_web.py"
+
+FETCH_CONNECTS=$(grep -c "fetch connected" "$TEST_ROOT/logs/error.log" || true)
+if [ "$FETCH_CONNECTS" -lt 2 ]; then
+    echo "not ok - fetch opens TCP connection" >&2
+    cat "$TEST_ROOT/logs/error.log" >&2
+    exit 1
+fi
+
+echo "ok - fetch opens TCP connection"
+
+FETCH_HEADERS=$(grep -c "fetch response header received" "$TEST_ROOT/logs/error.log" || true)
+if [ "$FETCH_HEADERS" -lt 2 ]; then
+    echo "not ok - fetch reads response header" >&2
+    cat "$TEST_ROOT/logs/error.log" >&2
+    exit 1
+fi
+
+echo "ok - fetch reads response header"

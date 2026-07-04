@@ -47,6 +47,10 @@ static char *ngx_http_lua_web_file(ngx_conf_t *cf, ngx_command_t *cmd,
 static void *ngx_http_lua_create_loc_conf(ngx_conf_t *cf);
 static char *ngx_http_lua_merge_loc_conf(ngx_conf_t *cf, void *parent,
     void *child);
+static void ngx_http_lua_push_request_registry(lua_State *L);
+
+
+static char ngx_http_lua_request_registry_key;
 
 
 static ngx_command_t  ngx_http_lua_commands[] = {
@@ -91,6 +95,67 @@ ngx_module_t  ngx_http_lua_module = {
     NULL,                                  /* exit master */
     NGX_MODULE_V1_PADDING
 };
+
+
+void
+ngx_http_lua_set_request(lua_State *L, ngx_http_request_t *r)
+{
+    ngx_http_lua_push_request_registry(L);
+
+    lua_pushlightuserdata(L, L);
+    lua_pushlightuserdata(L, r);
+    lua_rawset(L, -3);
+
+    lua_pop(L, 1);
+}
+
+
+ngx_http_request_t *
+ngx_http_lua_get_request(lua_State *L)
+{
+    ngx_http_request_t  *r;
+
+    ngx_http_lua_push_request_registry(L);
+
+    lua_pushlightuserdata(L, L);
+    lua_rawget(L, -2);
+
+    r = lua_touserdata(L, -1);
+
+    lua_pop(L, 2);
+
+    return r;
+}
+
+
+void
+ngx_http_lua_clear_request(lua_State *L)
+{
+    ngx_http_lua_push_request_registry(L);
+
+    lua_pushlightuserdata(L, L);
+    lua_pushnil(L);
+    lua_rawset(L, -3);
+
+    lua_pop(L, 1);
+}
+
+
+static void
+ngx_http_lua_push_request_registry(lua_State *L)
+{
+    lua_rawgetp(L, LUA_REGISTRYINDEX, &ngx_http_lua_request_registry_key);
+
+    if (!lua_isnil(L, -1)) {
+        return;
+    }
+
+    lua_pop(L, 1);
+
+    lua_newtable(L);
+    lua_pushvalue(L, -1);
+    lua_rawsetp(L, LUA_REGISTRYINDEX, &ngx_http_lua_request_registry_key);
+}
 
 
 static ngx_int_t
@@ -286,6 +351,8 @@ ngx_http_lua_run_handler(ngx_http_request_t *r, ngx_http_lua_ctx_t *ctx,
     lua_pushvalue(co, -1);
     ctx->request_ref = luaL_ref(co, LUA_REGISTRYINDEX);
 
+    ngx_http_lua_set_request(co, r);
+
     return ngx_http_lua_resume_request(r, 1);
 }
 
@@ -378,6 +445,10 @@ ngx_http_lua_cleanup_ctx(void *data)
     ngx_http_lua_ctx_t  *ctx = data;
 
     if (ctx->co != NULL) {
+        ngx_http_lua_clear_request(ctx->co);
+    }
+
+    if (ctx->co != NULL) {
         ngx_lua_destroy_coroutine(ctx->co, ctx->main);
         ctx->co = NULL;
     }
@@ -456,6 +527,7 @@ ngx_http_lua_create_main_conf(ngx_conf_t *cf)
     ngx_lua_web_stream_register(conf->lua);
     ngx_lua_web_headers_register(conf->lua);
     ngx_lua_web_request_register(conf->lua);
+    ngx_http_lua_fetch_register(conf->lua);
     ngx_lua_web_response_register(conf->lua);
 
     cln->handler = ngx_http_lua_cleanup_vm;

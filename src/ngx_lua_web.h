@@ -57,6 +57,9 @@ ngx_int_t ngx_lua_web_headers_get_entry(ngx_lua_web_headers_t *headers,
     size_t index, ngx_str_t *name, ngx_str_t *value);
 void ngx_lua_web_headers_register(lua_State *L);
 ngx_lua_web_request_t *ngx_lua_web_request_create(lua_State *L);
+ngx_lua_web_request_t *ngx_lua_web_request_get(lua_State *L, int index);
+void ngx_lua_web_request_init(lua_State *L, ngx_lua_web_request_t *request,
+    int init_index, int arg);
 ngx_int_t ngx_lua_web_request_set_string(lua_State *L, ngx_str_t *field,
     const char *value, size_t len);
 void ngx_lua_web_request_register(lua_State *L);

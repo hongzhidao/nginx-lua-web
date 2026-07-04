@@ -14,8 +14,6 @@
 static int ngx_lua_web_request_new(lua_State *L);
 static int ngx_lua_web_request_index(lua_State *L);
 static int ngx_lua_web_request_gc(lua_State *L);
-static void ngx_lua_web_request_init(lua_State *L,
-    ngx_lua_web_request_t *request, int init_index, int arg);
 static void ngx_lua_web_request_init_body(lua_State *L,
     ngx_lua_web_request_t *request, int init_index, int arg,
     int request_index);
@@ -172,6 +170,13 @@ ngx_lua_web_request_create(lua_State *L)
 }
 
 
+ngx_lua_web_request_t *
+ngx_lua_web_request_get(lua_State *L, int index)
+{
+    return luaL_testudata(L, index, NGX_LUA_WEB_REQUEST_METATABLE);
+}
+
+
 static int
 ngx_lua_web_request_gc(lua_State *L)
 {
@@ -189,7 +194,7 @@ ngx_lua_web_request_gc(lua_State *L)
 }
 
 
-static void
+void
 ngx_lua_web_request_init(lua_State *L, ngx_lua_web_request_t *request,
     int init_index, int arg)
 {
