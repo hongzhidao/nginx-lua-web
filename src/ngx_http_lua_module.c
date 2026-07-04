@@ -40,6 +40,9 @@ static ngx_lua_app_t *ngx_http_lua_run_file(ngx_http_request_t *r,
     ngx_http_lua_ctx_t *ctx);
 static ngx_int_t ngx_http_lua_run_handler(ngx_http_request_t *r,
     ngx_http_lua_ctx_t *ctx, ngx_lua_app_t *app);
+static ngx_int_t ngx_http_lua_resume_request(ngx_http_request_t *r,
+    int nargs);
+static void ngx_http_lua_resume_handler(void *data);
 static ngx_int_t ngx_http_lua_read_result(ngx_http_request_t *r,
     lua_State *co, int nresults, ngx_uint_t *status, ngx_str_t *body);
 static ngx_int_t ngx_http_lua_send_response(ngx_http_request_t *r,
@@ -163,6 +166,10 @@ ngx_http_lua_request_body_handler(ngx_http_request_t *r)
 
     rc = ngx_http_lua_run_handler(r, ctx, app);
 
+    if (rc == NGX_AGAIN) {
+        return;
+    }
+
     ngx_http_finalize_request(r, rc);
 }
 
@@ -182,10 +189,10 @@ ngx_http_lua_run_file(ngx_http_request_t *r, ngx_http_lua_ctx_t *ctx)
     L = lmcf->lua;
     nresults = 0;
 
-    co = lua_newthread(L);
+    co = ngx_lua_create_coroutine(L, r->pool);
     if (co == NULL) {
         ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
-                      "lua_newthread() failed");
+                      "ngx_lua_create_coroutine() failed");
         return NULL;
     }
 
@@ -250,10 +257,8 @@ ngx_http_lua_run_handler(ngx_http_request_t *r, ngx_http_lua_ctx_t *ctx,
     ngx_lua_app_t *app)
 {
     int                       handler_ref;
-    int                       nresults, rc;
     lua_State                *co;
     ngx_str_t                 body;
-    ngx_uint_t                status;
     ngx_http_lua_loc_conf_t  *llcf;
 
     co = ctx->co;
@@ -284,12 +289,28 @@ ngx_http_lua_run_handler(ngx_http_request_t *r, ngx_http_lua_ctx_t *ctx,
         return NGX_HTTP_INTERNAL_SERVER_ERROR;
     }
 
+    return ngx_http_lua_resume_request(r, 1);
+}
+
+
+static ngx_int_t
+ngx_http_lua_resume_request(ngx_http_request_t *r, int nargs)
+{
+    int                       nresults, rc;
+    ngx_str_t                 body;
+    ngx_uint_t                status;
+    ngx_http_lua_ctx_t       *ctx;
+    ngx_lua_ctx_t            *lctx;
+    ngx_http_lua_loc_conf_t  *llcf;
+
+    ctx = ngx_http_get_module_ctx(r, ngx_http_lua_module);
+    llcf = ngx_http_get_module_loc_conf(r, ngx_http_lua_module);
     nresults = 0;
 
-    rc = lua_resume(co, ctx->main, 1, &nresults);
+    rc = lua_resume(ctx->co, ctx->main, nargs, &nresults);
 
     if (rc == LUA_OK) {
-        rc = ngx_http_lua_read_result(r, co, nresults, &status, &body);
+        rc = ngx_http_lua_read_result(r, ctx->co, nresults, &status, &body);
         if (rc != NGX_OK) {
             return NGX_HTTP_INTERNAL_SERVER_ERROR;
         }
@@ -298,17 +319,33 @@ ngx_http_lua_run_handler(ngx_http_request_t *r, ngx_http_lua_ctx_t *ctx,
     }
 
     if (rc == LUA_YIELD) {
-        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
-                      "lua_web_file \"%V\" route handler yielded",
-                      &llcf->lua_web_file);
-        return NGX_HTTP_INTERNAL_SERVER_ERROR;
+        lctx = ngx_lua_get_ctx(ctx->co);
+        lctx->resume = ngx_http_lua_resume_handler;
+        lctx->data = r;
+        return NGX_AGAIN;
     }
 
     ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
                   "lua_web_file \"%V\" route handler failed: %s",
-                  &llcf->lua_web_file, lua_tostring(co, -1));
+                  &llcf->lua_web_file, lua_tostring(ctx->co, -1));
 
     return NGX_HTTP_INTERNAL_SERVER_ERROR;
+}
+
+
+static void
+ngx_http_lua_resume_handler(void *data)
+{
+    ngx_int_t            rc;
+    ngx_http_request_t  *r = data;
+
+    rc = ngx_http_lua_resume_request(r, 0);
+
+    if (rc == NGX_AGAIN) {
+        return;
+    }
+
+    ngx_http_finalize_request(r, rc);
 }
 
 
@@ -425,7 +462,7 @@ ngx_http_lua_cleanup_ctx(void *data)
     ngx_http_lua_ctx_t  *ctx = data;
 
     if (ctx->co != NULL) {
-        (void) lua_closethread(ctx->co, ctx->main);
+        ngx_lua_destroy_coroutine(ctx->co, ctx->main);
         ctx->co = NULL;
     }
 
@@ -438,7 +475,6 @@ ngx_http_lua_cleanup_ctx(void *data)
         luaL_unref(ctx->main, LUA_REGISTRYINDEX, ctx->co_ref);
         ctx->co_ref = LUA_NOREF;
     }
-
 }
 
 
@@ -489,6 +525,7 @@ ngx_http_lua_create_main_conf(ngx_conf_t *cf)
     }
 
     luaL_openlibs(conf->lua);
+    ngx_lua_set_ctx(conf->lua, NULL);
 
     ngx_lua_disable_coroutine(conf->lua);
     ngx_lua_app_register(conf->lua);
