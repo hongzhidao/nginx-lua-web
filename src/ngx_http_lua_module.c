@@ -25,13 +25,24 @@ typedef struct {
 } ngx_http_lua_loc_conf_t;
 
 
+typedef struct {
+    lua_State                *main;
+    lua_State                *co;
+    int                       app_ref;
+    int                       co_ref;
+} ngx_http_lua_ctx_t;
+
+
 static ngx_int_t ngx_http_lua_handler(ngx_http_request_t *r);
-static ngx_int_t ngx_http_lua_run(ngx_http_request_t *r, ngx_uint_t *status,
-    ngx_str_t *body);
+static ngx_lua_app_t *ngx_http_lua_run_file(ngx_http_request_t *r,
+    ngx_http_lua_ctx_t *ctx);
+static ngx_int_t ngx_http_lua_run_handler(ngx_http_request_t *r,
+    ngx_http_lua_ctx_t *ctx, ngx_lua_app_t *app);
 static ngx_int_t ngx_http_lua_read_result(ngx_http_request_t *r,
     lua_State *co, int nresults, ngx_uint_t *status, ngx_str_t *body);
 static ngx_int_t ngx_http_lua_send_response(ngx_http_request_t *r,
     ngx_uint_t status, ngx_str_t *body);
+static void ngx_http_lua_cleanup_ctx(void *data);
 static char *ngx_http_lua_load_file(ngx_conf_t *cf,
     ngx_http_lua_loc_conf_t *llcf);
 static void *ngx_http_lua_create_main_conf(ngx_conf_t *cf);
@@ -91,30 +102,64 @@ static ngx_int_t
 ngx_http_lua_handler(ngx_http_request_t *r)
 {
     ngx_int_t                  rc;
-    ngx_str_t                  body;
-    ngx_uint_t                 status;
+    ngx_pool_cleanup_t        *cln;
+    ngx_http_lua_ctx_t        *ctx;
+    ngx_http_lua_main_conf_t  *lmcf;
+    ngx_lua_app_t             *app;
+
+    if (r != r->main) {
+        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+                      "lua_web_file does not support subrequests");
+        return NGX_HTTP_INTERNAL_SERVER_ERROR;
+    }
 
     rc = ngx_http_discard_request_body(r);
     if (rc != NGX_OK) {
         return rc;
     }
 
-    rc = ngx_http_lua_run(r, &status, &body);
-    if (rc != NGX_OK) {
+    ctx = ngx_pcalloc(r->pool, sizeof(ngx_http_lua_ctx_t));
+    if (ctx == NULL) {
         return NGX_HTTP_INTERNAL_SERVER_ERROR;
     }
 
-    return ngx_http_lua_send_response(r, status, &body);
+    cln = ngx_pool_cleanup_add(r->pool, 0);
+    if (cln == NULL) {
+        return NGX_HTTP_INTERNAL_SERVER_ERROR;
+    }
+
+    lmcf = ngx_http_get_module_main_conf(r, ngx_http_lua_module);
+
+    ctx->main = lmcf->lua;
+    ctx->app_ref = LUA_NOREF;
+    ctx->co_ref = LUA_NOREF;
+
+    cln->handler = ngx_http_lua_cleanup_ctx;
+    cln->data = ctx;
+
+    ngx_http_set_ctx(r, ctx, ngx_http_lua_module);
+
+    app = ngx_http_lua_run_file(r, ctx);
+    if (app == NULL) {
+        return NGX_HTTP_INTERNAL_SERVER_ERROR;
+    }
+
+    rc = ngx_http_lua_run_handler(r, ctx, app);
+
+    if (rc == NGX_ERROR) {
+        return NGX_HTTP_INTERNAL_SERVER_ERROR;
+    }
+
+    return rc;
 }
 
 
-static ngx_int_t
-ngx_http_lua_run(ngx_http_request_t *r, ngx_uint_t *status, ngx_str_t *body)
+static ngx_lua_app_t *
+ngx_http_lua_run_file(ngx_http_request_t *r, ngx_http_lua_ctx_t *ctx)
 {
-    int                       app_index, app_ref, co_ref, handler_ref;
+    int                       app_index;
     int                       nresults, rc;
     lua_State                *L, *co;
-    ngx_int_t                 rv;
     ngx_lua_app_t            *app;
     ngx_http_lua_main_conf_t  *lmcf;
     ngx_http_lua_loc_conf_t   *llcf;
@@ -122,19 +167,17 @@ ngx_http_lua_run(ngx_http_request_t *r, ngx_uint_t *status, ngx_str_t *body)
     lmcf = ngx_http_get_module_main_conf(r, ngx_http_lua_module);
     llcf = ngx_http_get_module_loc_conf(r, ngx_http_lua_module);
     L = lmcf->lua;
-    app_ref = LUA_NOREF;
-    co_ref = LUA_NOREF;
     nresults = 0;
-    rv = NGX_ERROR;
 
     co = lua_newthread(L);
     if (co == NULL) {
         ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
                       "lua_newthread() failed");
-        return NGX_ERROR;
+        return NULL;
     }
 
-    co_ref = luaL_ref(L, LUA_REGISTRYINDEX);
+    ctx->co = co;
+    ctx->co_ref = luaL_ref(L, LUA_REGISTRYINDEX);
 
     lua_rawgeti(L, LUA_REGISTRYINDEX, llcf->lua_ref);
 
@@ -143,7 +186,7 @@ ngx_http_lua_run(ngx_http_request_t *r, ngx_uint_t *status, ngx_str_t *body)
                       "lua_web_file \"%V\" registry entry is not a function",
                       &llcf->lua_web_file);
         lua_pop(L, 1);
-        goto done;
+        return NULL;
     }
 
     lua_xmove(L, co, 1);
@@ -152,24 +195,23 @@ ngx_http_lua_run(ngx_http_request_t *r, ngx_uint_t *status, ngx_str_t *body)
 
     if (rc == LUA_YIELD) {
         ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
-                      "lua_web_file \"%V\" yielded without an async "
-                      "continuation",
+                      "lua_web_file \"%V\" yielded",
                       &llcf->lua_web_file);
-        goto done;
+        return NULL;
     }
 
     if (rc != LUA_OK) {
         ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
                       "lua_web_file \"%V\" failed: %s",
                       &llcf->lua_web_file, lua_tostring(co, -1));
-        goto done;
+        return NULL;
     }
 
     if (nresults < 1) {
         ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
                       "lua_web_file \"%V\" returned no app",
                       &llcf->lua_web_file);
-        goto done;
+        return NULL;
     }
 
     app_index = lua_gettop(co) - nresults + 1;
@@ -179,21 +221,41 @@ ngx_http_lua_run(ngx_http_request_t *r, ngx_uint_t *status, ngx_str_t *body)
         ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
                       "lua_web_file \"%V\" must return app",
                       &llcf->lua_web_file);
-        goto done;
+        return NULL;
     }
+
+    lua_pushvalue(co, app_index);
+    lua_replace(co, 1);
+    lua_settop(co, 1);
+
+    return app;
+}
+
+
+static ngx_int_t
+ngx_http_lua_run_handler(ngx_http_request_t *r, ngx_http_lua_ctx_t *ctx,
+    ngx_lua_app_t *app)
+{
+    int                       handler_ref;
+    int                       nresults, rc;
+    lua_State                *co;
+    ngx_str_t                 body;
+    ngx_uint_t                status;
+    ngx_http_lua_loc_conf_t  *llcf;
+
+    co = ctx->co;
+    llcf = ngx_http_get_module_loc_conf(r, ngx_http_lua_module);
 
     handler_ref = ngx_lua_app_find_handler(app, (char *) r->uri.data,
                                            r->uri.len);
 
     if (handler_ref == LUA_NOREF) {
-        ngx_str_set(body, "");
-        *status = NGX_HTTP_NOT_FOUND;
-        rv = NGX_OK;
-        goto done;
+        ngx_str_set(&body, "");
+        return ngx_http_lua_send_response(r, NGX_HTTP_NOT_FOUND, &body);
     }
 
-    lua_pushvalue(co, app_index);
-    app_ref = luaL_ref(co, LUA_REGISTRYINDEX);
+    lua_pushvalue(co, 1);
+    ctx->app_ref = luaL_ref(co, LUA_REGISTRYINDEX);
 
     lua_settop(co, 0);
     lua_rawgeti(co, LUA_REGISTRYINDEX, handler_ref);
@@ -202,33 +264,34 @@ ngx_http_lua_run(ngx_http_request_t *r, ngx_uint_t *status, ngx_str_t *body)
         ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
                       "lua_web_file \"%V\" route handler is not a function",
                       &llcf->lua_web_file);
-        goto done;
+        return NGX_ERROR;
     }
 
-    rc = lua_resume(co, L, 0, &nresults);
+    nresults = 0;
+
+    rc = lua_resume(co, ctx->main, 0, &nresults);
 
     if (rc == LUA_OK) {
-        rv = ngx_http_lua_read_result(r, co, nresults, status, body);
+        rc = ngx_http_lua_read_result(r, co, nresults, &status, &body);
+        if (rc != NGX_OK) {
+            return rc;
+        }
 
-    } else if (rc == LUA_YIELD) {
-        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
-                      "lua_web_file \"%V\" route handler yielded without "
-                      "an async continuation",
-                      &llcf->lua_web_file);
-
-    } else {
-        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
-                      "lua_web_file \"%V\" route handler failed: %s",
-                      &llcf->lua_web_file, lua_tostring(co, -1));
+        return ngx_http_lua_send_response(r, status, &body);
     }
 
-done:
+    if (rc == LUA_YIELD) {
+        ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+                      "lua_web_file \"%V\" route handler yielded",
+                      &llcf->lua_web_file);
+        return NGX_ERROR;
+    }
 
-    (void) lua_closethread(co, L);
-    luaL_unref(L, LUA_REGISTRYINDEX, app_ref);
-    luaL_unref(L, LUA_REGISTRYINDEX, co_ref);
+    ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
+                  "lua_web_file \"%V\" route handler failed: %s",
+                  &llcf->lua_web_file, lua_tostring(co, -1));
 
-    return rv;
+    return NGX_ERROR;
 }
 
 
@@ -339,6 +402,29 @@ ngx_http_lua_send_response(ngx_http_request_t *r, ngx_uint_t status,
 }
 
 
+static void
+ngx_http_lua_cleanup_ctx(void *data)
+{
+    ngx_http_lua_ctx_t  *ctx = data;
+
+    if (ctx->co != NULL) {
+        (void) lua_closethread(ctx->co, ctx->main);
+        ctx->co = NULL;
+    }
+
+    if (ctx->app_ref != LUA_NOREF) {
+        luaL_unref(ctx->main, LUA_REGISTRYINDEX, ctx->app_ref);
+        ctx->app_ref = LUA_NOREF;
+    }
+
+    if (ctx->co_ref != LUA_NOREF) {
+        luaL_unref(ctx->main, LUA_REGISTRYINDEX, ctx->co_ref);
+        ctx->co_ref = LUA_NOREF;
+    }
+
+}
+
+
 static char *
 ngx_http_lua_load_file(ngx_conf_t *cf, ngx_http_lua_loc_conf_t *llcf)
 {
@@ -386,6 +472,8 @@ ngx_http_lua_create_main_conf(ngx_conf_t *cf)
     }
 
     luaL_openlibs(conf->lua);
+
+    ngx_lua_disable_coroutine(conf->lua);
     ngx_lua_app_register(conf->lua);
 
     cln->handler = ngx_http_lua_cleanup_vm;

@@ -63,17 +63,27 @@ def test_app_new_rejects_arguments():
         raise AssertionError(f"expected App.new rejection body, got {body!r}")
 
 
+def test_coroutine_library_is_not_exposed():
+    status, body = request("/lua-coroutine-disabled")
+
+    if status != 200:
+        raise AssertionError(f"expected 200, got {status}: {body!r}")
+
+    if body != "coroutine disabled":
+        raise AssertionError(f"expected coroutine disabled body, got {body!r}")
+
+
 def main():
     try:
         test_lua_web_file_returns_status_and_text()
         test_lua_web_file_keeps_location_refs_separate()
         test_app_new_rejects_arguments()
+        test_coroutine_library_is_not_exposed()
     except Exception as exc:
-        print(f"not ok - lua_web_file returns status and text: {exc}",
-              file=sys.stderr)
+        print(f"not ok - lua_web_file behavior: {exc}", file=sys.stderr)
         return 1
 
-    print("ok - lua_web_file returns status and text")
+    print("ok - lua_web_file behavior")
     return 0
 
 

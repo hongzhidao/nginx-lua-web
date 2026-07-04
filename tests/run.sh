@@ -72,6 +72,25 @@ end)
 return app
 EOF
 
+cat > "$TEST_ROOT/app-coroutine-disabled.lua" <<'EOF'
+local app = App.new()
+local require_ok = pcall(require, "coroutine")
+
+app:all("*", function()
+    if coroutine ~= nil then
+        return { 500, "coroutine global is available" }
+    end
+
+    if require_ok then
+        return { 500, "coroutine module is available" }
+    end
+
+    return { 200, "coroutine disabled" }
+end)
+
+return app
+EOF
+
 cat > "$TEST_ROOT/conf/nginx.conf" <<EOF
 worker_processes  1;
 error_log  logs/error.log notice;
@@ -97,6 +116,10 @@ http {
 
         location /lua-app-args {
             lua_web_file $TEST_ROOT/app-args.lua;
+        }
+
+        location /lua-coroutine-disabled {
+            lua_web_file $TEST_ROOT/app-coroutine-disabled.lua;
         }
     }
 }
