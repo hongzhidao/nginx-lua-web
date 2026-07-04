@@ -52,7 +52,20 @@ static ngx_int_t
 ngx_http_lua_request_body_source_pull(ngx_lua_web_stream_t *stream,
     ngx_lua_web_stream_source_t *source)
 {
-    return ngx_http_lua_request_body_read(source->data, stream);
+    ngx_int_t  rc;
+
+    rc = ngx_http_lua_request_body_read(source->data, stream);
+
+    if (rc == NGX_DONE) {
+        ngx_lua_web_stream_close(stream);
+        return NGX_OK;
+    }
+
+    if (rc == NGX_ERROR) {
+        ngx_lua_web_stream_error(stream);
+    }
+
+    return rc;
 }
 
 

@@ -98,6 +98,8 @@ static const luaL_Reg  ngx_lua_web_stream_reader_methods[] = {
 static void ngx_lua_web_stream_push_metatable(lua_State *L);
 static void ngx_lua_web_stream_set_metatable(lua_State *L);
 static void ngx_lua_web_stream_controller_set_metatable(lua_State *L);
+static ngx_int_t ngx_lua_web_stream_read_buffered(
+    ngx_lua_web_stream_t *stream, ngx_pool_t *pool, ngx_str_t *value);
 static ngx_int_t ngx_lua_web_stream_read_buffer(
     ngx_lua_web_stream_t *stream, ngx_pool_t *pool, ngx_str_t *value);
 static void ngx_lua_web_stream_pop_buf(ngx_lua_web_stream_t *stream,
@@ -265,47 +267,44 @@ ngx_lua_web_stream_read(ngx_lua_web_stream_t *stream, ngx_pool_t *pool,
     value->data = NULL;
     value->len = 0;
 
-    for ( ;; ) {
-        if (stream->errored) {
-            return NGX_ERROR;
-        }
+    rc = ngx_lua_web_stream_read_buffered(stream, pool, value);
+    if (rc != NGX_AGAIN) {
+        return rc;
+    }
 
-        rc = ngx_lua_web_stream_read_buffer(stream, pool, value);
-        if (rc != NGX_AGAIN) {
-            return rc;
-        }
+    if (stream->source == NULL) {
+        return NGX_DONE;
+    }
 
-        if (stream->closed) {
-            return NGX_DONE;
-        }
+    rc = stream->source->pull(stream, stream->source);
+    if (rc != NGX_OK) {
+        return rc;
+    }
 
-        if (stream->source == NULL) {
-            stream->closed = 1;
-            return NGX_DONE;
-        }
+    return ngx_lua_web_stream_read_buffered(stream, pool, value);
+}
 
-        rc = stream->source->pull(stream, stream->source);
-        if (rc == NGX_OK) {
-            if (stream->bufs == NULL && !stream->closed && !stream->errored) {
-                return NGX_AGAIN;
-            }
 
-            continue;
-        }
+static ngx_int_t
+ngx_lua_web_stream_read_buffered(ngx_lua_web_stream_t *stream,
+    ngx_pool_t *pool, ngx_str_t *value)
+{
+    ngx_int_t     rc;
 
-        if (rc == NGX_AGAIN) {
-            return NGX_AGAIN;
-        }
-
-        if (rc == NGX_DONE) {
-            stream->closed = 1;
-            return NGX_DONE;
-        }
-
-        stream->errored = 1;
-
+    if (stream->errored) {
         return NGX_ERROR;
     }
+
+    rc = ngx_lua_web_stream_read_buffer(stream, pool, value);
+    if (rc != NGX_AGAIN) {
+        return rc;
+    }
+
+    if (stream->closed) {
+        return NGX_DONE;
+    }
+
+    return NGX_AGAIN;
 }
 
 
