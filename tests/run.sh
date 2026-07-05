@@ -644,6 +644,34 @@ app:all("*", function()
         if bad_body_ok then
             error("Response.new accepted invalid body")
         end
+
+        local function expect_bad_response_headers(headers, message)
+            local ok = pcall(function()
+                Response.new({ headers = headers })
+            end)
+            if ok then
+                error(message)
+            end
+        end
+
+        expect_bad_response_headers(
+            { [""] = "bad" },
+            "Response.new accepted empty header name")
+        expect_bad_response_headers(
+            { ["Bad Header"] = "bad" },
+            "Response.new accepted invalid header name")
+        expect_bad_response_headers(
+            { ["Bad:Header"] = "bad" },
+            "Response.new accepted header name with colon")
+        expect_bad_response_headers(
+            { ["X-Bad"] = "one\r\ntwo" },
+            "Response.new accepted response-splitting header value")
+        expect_bad_response_headers(
+            { ["X-Bad"] = "one\0two" },
+            "Response.new accepted NUL header value")
+        expect_bad_response_headers(
+            { ["X-Bad"] = "one\127two" },
+            "Response.new accepted DEL header value")
     end)
 
     if not ok then
@@ -724,6 +752,27 @@ app:all("*", function()
         end)
         if bad_value_ok then
             error("Headers.set accepted invalid value")
+        end
+
+        local bad_empty_name_ok = pcall(function()
+            set_headers:set("", "bad")
+        end)
+        if bad_empty_name_ok then
+            error("Headers.set accepted empty name")
+        end
+
+        local bad_token_name_ok = pcall(function()
+            set_headers:set("Bad Header", "bad")
+        end)
+        if bad_token_name_ok then
+            error("Headers.set accepted invalid token name")
+        end
+
+        local bad_control_value_ok = pcall(function()
+            set_headers:set("X-Bad", "bad\1value")
+        end)
+        if bad_control_value_ok then
+            error("Headers.set accepted invalid control value")
         end
 
         if not set_headers:has("X-Test") then

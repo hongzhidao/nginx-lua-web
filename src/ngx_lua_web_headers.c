@@ -46,6 +46,7 @@ static ngx_int_t ngx_lua_web_headers_dup(lua_State *L, ngx_str_t *dst,
     const char *src, size_t len);
 static ngx_uint_t ngx_lua_web_headers_name_eq(ngx_str_t *stored,
     const char *name, size_t len);
+static ngx_uint_t ngx_lua_web_headers_is_token_char(u_char ch);
 static void ngx_lua_web_headers_free_entry(lua_State *L,
     ngx_lua_web_header_t *header);
 static void *ngx_lua_web_headers_alloc(lua_State *L, void *ptr,
@@ -182,6 +183,9 @@ ngx_lua_web_headers_get_method(lua_State *L)
     }
 
     name = lua_tolstring(L, 2, &name_len);
+    if (!ngx_lua_web_headers_validate_name(name, name_len)) {
+        return luaL_argerror(L, 2, "invalid header name");
+    }
 
     for (i = 0; i < headers->nelts; i++) {
         header = &headers->elts[i];
@@ -222,6 +226,14 @@ ngx_lua_web_headers_set_method(lua_State *L)
     name = lua_tolstring(L, 2, &name_len);
     value = lua_tolstring(L, 3, &value_len);
 
+    if (!ngx_lua_web_headers_validate_name(name, name_len)) {
+        return luaL_argerror(L, 2, "invalid header name");
+    }
+
+    if (!ngx_lua_web_headers_validate_value(value, value_len)) {
+        return luaL_argerror(L, 3, "invalid header value");
+    }
+
     ngx_lua_web_headers_set(L, headers, name, name_len, value, value_len);
 
     return 0;
@@ -246,6 +258,9 @@ ngx_lua_web_headers_has_method(lua_State *L)
     }
 
     name = lua_tolstring(L, 2, &name_len);
+    if (!ngx_lua_web_headers_validate_name(name, name_len)) {
+        return luaL_argerror(L, 2, "invalid header name");
+    }
 
     for (i = 0; i < headers->nelts; i++) {
         if (ngx_lua_web_headers_name_eq(&headers->elts[i].name, name,
@@ -279,6 +294,9 @@ ngx_lua_web_headers_delete_method(lua_State *L)
     }
 
     name = lua_tolstring(L, 2, &name_len);
+    if (!ngx_lua_web_headers_validate_name(name, name_len)) {
+        return luaL_argerror(L, 2, "invalid header name");
+    }
 
     for (i = 0; i < headers->nelts; i++) {
         if (ngx_lua_web_headers_name_eq(&headers->elts[i].name, name,
@@ -444,8 +462,57 @@ ngx_lua_web_headers_copy_entry(lua_State *L, ngx_lua_web_headers_t *headers,
     name = lua_tolstring(L, key, &name_len);
     header_value = lua_tolstring(L, value, &value_len);
 
+    if (!ngx_lua_web_headers_validate_name(name, name_len)) {
+        luaL_argerror(L, arg, "invalid header name");
+    }
+
+    if (!ngx_lua_web_headers_validate_value(header_value, value_len)) {
+        luaL_argerror(L, arg, "invalid header value");
+    }
+
     ngx_lua_web_headers_set(L, headers, name, name_len,
                             header_value, value_len);
+}
+
+
+ngx_uint_t
+ngx_lua_web_headers_validate_name(const char *name, size_t len)
+{
+    size_t  i;
+
+    if (len == 0) {
+        return 0;
+    }
+
+    for (i = 0; i < len; i++) {
+        if (!ngx_lua_web_headers_is_token_char((u_char) name[i])) {
+            return 0;
+        }
+    }
+
+    return 1;
+}
+
+
+ngx_uint_t
+ngx_lua_web_headers_validate_value(const char *value, size_t len)
+{
+    size_t  i;
+    u_char  ch;
+
+    for (i = 0; i < len; i++) {
+        ch = (u_char) value[i];
+
+        if (ch == '\t' || ch == ' ' || (ch >= 0x21 && ch <= 0x7e)
+            || ch >= 0x80)
+        {
+            continue;
+        }
+
+        return 0;
+    }
+
+    return 1;
 }
 
 
@@ -456,6 +523,16 @@ ngx_lua_web_headers_set(lua_State *L, ngx_lua_web_headers_t *headers,
     size_t                 i;
     ngx_str_t              new_name, new_value;
     ngx_lua_web_header_t  *header;
+
+    if (!ngx_lua_web_headers_validate_name(name, name_len)) {
+        (void) luaL_error(L, "invalid header name");
+        return;
+    }
+
+    if (!ngx_lua_web_headers_validate_value(value, value_len)) {
+        (void) luaL_error(L, "invalid header value");
+        return;
+    }
 
     for (i = 0; i < headers->nelts; i++) {
         header = &headers->elts[i];
@@ -581,6 +658,44 @@ ngx_lua_web_headers_dup(lua_State *L, ngx_str_t *dst, const char *src,
     ngx_memcpy(dst->data, src, len);
 
     return NGX_OK;
+}
+
+
+static ngx_uint_t
+ngx_lua_web_headers_is_token_char(u_char ch)
+{
+    if (ch >= '0' && ch <= '9') {
+        return 1;
+    }
+
+    if (ch >= 'A' && ch <= 'Z') {
+        return 1;
+    }
+
+    if (ch >= 'a' && ch <= 'z') {
+        return 1;
+    }
+
+    switch (ch) {
+    case '!':
+    case '#':
+    case '$':
+    case '%':
+    case '&':
+    case '\'':
+    case '*':
+    case '+':
+    case '-':
+    case '.':
+    case '^':
+    case '_':
+    case '`':
+    case '|':
+    case '~':
+        return 1;
+    }
+
+    return 0;
 }
 
 

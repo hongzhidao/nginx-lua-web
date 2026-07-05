@@ -63,6 +63,8 @@ ngx_lua_web_headers_t *ngx_lua_web_headers_get(lua_State *L, int index);
 size_t ngx_lua_web_headers_count(ngx_lua_web_headers_t *headers);
 ngx_int_t ngx_lua_web_headers_get_entry(ngx_lua_web_headers_t *headers,
     size_t index, ngx_str_t *name, ngx_str_t *value);
+ngx_uint_t ngx_lua_web_headers_validate_name(const char *name, size_t len);
+ngx_uint_t ngx_lua_web_headers_validate_value(const char *value, size_t len);
 void ngx_lua_web_headers_set(lua_State *L,
     ngx_lua_web_headers_t *headers, const char *name, size_t name_len,
     const char *value, size_t value_len);

@@ -2071,6 +2071,14 @@ ngx_http_lua_fetch_parse_response_headers(lua_State *L,
             value_end--;
         }
 
+        if (!ngx_lua_web_headers_validate_name((const char *) p, colon - p)
+            || !ngx_lua_web_headers_validate_value((const char *) value,
+                                                   value_end - value))
+        {
+            ngx_http_lua_fetch_fail(fetch, "fetch response header invalid");
+            return NGX_ERROR;
+        }
+
         ngx_lua_web_headers_set(L, response->headers, (const char *) p,
                                 colon - p, (const char *) value,
                                 value_end - value);
