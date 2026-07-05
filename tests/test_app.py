@@ -61,6 +61,26 @@ def test_app_method_mismatch_returns_404():
         raise AssertionError(f"expected empty 404 body, got {body!r}")
 
 
+def test_app_prefix_routes_subpaths():
+    status, body = request("/lua-methods/prefix/child", method="GET")
+
+    if status != 200:
+        raise AssertionError(f"expected 200, got {status}")
+
+    if body != "prefix first":
+        raise AssertionError(f"expected prefix route body, got {body!r}")
+
+
+def test_app_routes_match_in_registration_order():
+    status, body = request("/lua-methods/prefix/exact", method="GET")
+
+    if status != 200:
+        raise AssertionError(f"expected 200, got {status}")
+
+    if body != "prefix first":
+        raise AssertionError(f"expected first registered route, got {body!r}")
+
+
 def test_coroutine_library_is_not_exposed():
     status, body = request("/lua-coroutine-disabled")
 
@@ -85,6 +105,10 @@ def main():
          test_app_post_routes_post_requests),
         ("method mismatch returns 404",
          test_app_method_mismatch_returns_404),
+        ("prefix routes subpaths",
+         test_app_prefix_routes_subpaths),
+        ("routes match in registration order",
+         test_app_routes_match_in_registration_order),
         ("coroutine library is not exposed",
          test_coroutine_library_is_not_exposed),
     ])

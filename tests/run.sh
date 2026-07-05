@@ -1211,6 +1211,20 @@ app:post("/lua-methods-post-only", function(request)
     })
 end)
 
+app:get("/lua-methods/prefix/*", function()
+    return Response.new({
+        status = 200,
+        body = text_stream("prefix first"),
+    })
+end)
+
+app:get("/lua-methods/prefix/exact", function()
+    return Response.new({
+        status = 200,
+        body = text_stream("exact after prefix"),
+    })
+end)
+
 return app
 EOF
 

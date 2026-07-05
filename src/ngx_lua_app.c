@@ -12,12 +12,20 @@
 #define NGX_LUA_APP_METATABLE  "ngx_lua_app"
 
 
+typedef enum {
+    NGX_LUA_APP_MATCH_EXACT = 0,
+    NGX_LUA_APP_MATCH_PREFIX,
+    NGX_LUA_APP_MATCH_ALL
+} ngx_lua_app_match_e;
+
+
 typedef struct {
-    const char *method;
-    size_t      method_len;
-    char       *pattern;
-    size_t      pattern_len;
-    int         handler_ref;
+    const char          *method;
+    size_t               method_len;
+    char                *pattern;
+    size_t               pattern_len;
+    ngx_lua_app_match_e  match;
+    int                  handler_ref;
 } ngx_lua_app_route_t;
 
 
@@ -94,14 +102,21 @@ ngx_lua_app_find_handler(ngx_lua_app_t *app, const char *method,
             continue;
         }
 
-        if (app->routes[i].pattern_len == 1
-            && app->routes[i].pattern[0] == '*')
+        if (app->routes[i].match == NGX_LUA_APP_MATCH_ALL) {
+            return app->routes[i].handler_ref;
+        }
+
+        if (app->routes[i].match == NGX_LUA_APP_MATCH_EXACT
+            && app->routes[i].pattern_len == len
+            && memcmp(app->routes[i].pattern, path, len) == 0)
         {
             return app->routes[i].handler_ref;
         }
 
-        if (app->routes[i].pattern_len == len
-            && memcmp(app->routes[i].pattern, path, len) == 0)
+        if (app->routes[i].match == NGX_LUA_APP_MATCH_PREFIX
+            && app->routes[i].pattern_len <= len
+            && memcmp(app->routes[i].pattern, path,
+                      app->routes[i].pattern_len) == 0)
         {
             return app->routes[i].handler_ref;
         }
@@ -157,6 +172,7 @@ ngx_lua_app_route(lua_State *L, const char *name, const char *method,
     size_t method_len)
 {
     size_t                len;
+    size_t                pattern_len;
     const char           *pattern;
     ngx_lua_app_t        *app;
     ngx_lua_app_route_t  *route;
@@ -180,16 +196,26 @@ ngx_lua_app_route(lua_State *L, const char *name, const char *method,
 
     route->method = method;
     route->method_len = method_len;
+    route->match = NGX_LUA_APP_MATCH_EXACT;
+    pattern_len = len;
 
-    route->pattern = ngx_lua_app_alloc(L, NULL, 0, len + 1);
+    if (len == 1 && pattern[0] == '*') {
+        route->match = NGX_LUA_APP_MATCH_ALL;
+
+    } else if (len > 1 && pattern[len - 1] == '*') {
+        route->match = NGX_LUA_APP_MATCH_PREFIX;
+        pattern_len = len - 1;
+    }
+
+    route->pattern = ngx_lua_app_alloc(L, NULL, 0, pattern_len + 1);
     if (route->pattern == NULL) {
         app->nroutes--;
         return luaL_error(L, "no memory");
     }
 
-    memcpy(route->pattern, pattern, len);
-    route->pattern[len] = '\0';
-    route->pattern_len = len;
+    memcpy(route->pattern, pattern, pattern_len);
+    route->pattern[pattern_len] = '\0';
+    route->pattern_len = pattern_len;
 
     lua_pushvalue(L, 3);
     route->handler_ref = luaL_ref(L, LUA_REGISTRYINDEX);
