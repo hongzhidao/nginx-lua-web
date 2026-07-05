@@ -71,6 +71,19 @@ def test_fetch_https_returns_response():
         raise AssertionError(f"expected HTTPS response body, got {body!r}")
 
 
+def test_fetch_https_verifies_certificates_by_default():
+    if not HAVE_HTTP_SSL:
+        return
+
+    status, body = request("/lua-fetch-https-verify-fail")
+
+    if status != 200:
+        raise AssertionError(f"expected 200, got {status}: {body!r}")
+
+    if body != "fetch HTTPS verify failed":
+        raise AssertionError(f"expected HTTPS verification failure, got {body!r}")
+
+
 def test_fetch_opens_tcp_connection():
     connected = count_error_log("fetch connected")
     min_connected = 3 if HAVE_HTTP_SSL else 2
@@ -130,6 +143,8 @@ def main():
          test_fetch_dns_failure_returns_error),
         ("fetch HTTPS returns response",
          test_fetch_https_returns_response),
+        ("fetch HTTPS verifies certificates by default",
+         test_fetch_https_verifies_certificates_by_default),
         ("fetch opens TCP connection",
          test_fetch_opens_tcp_connection),
         ("fetch completes SSL handshake",

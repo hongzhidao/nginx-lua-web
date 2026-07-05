@@ -39,6 +39,8 @@ struct ngx_http_lua_fetch_keepalive_item_s {
     size_t                      host_cap;
     in_port_t                   port;
     ngx_uint_t                  ssl;
+    ngx_uint_t                  tls_verify;
+    ngx_uint_t                  tls_verify_host;
 };
 
 
@@ -77,6 +79,8 @@ struct ngx_http_lua_fetch_s {
     ngx_msec_t                  send_timeout;
     ngx_msec_t                  read_timeout;
     ngx_msec_t                  keepalive_timeout;
+    ngx_uint_t                  tls_verify;
+    ngx_uint_t                  tls_verify_host;
 
     ngx_lua_web_stream_t       *response_body;
     ngx_http_chunked_t          chunked;
@@ -109,6 +113,8 @@ static ngx_int_t ngx_http_lua_fetch_parse_options(lua_State *L,
     ngx_http_lua_fetch_t *fetch, int index, int arg);
 static ngx_int_t ngx_http_lua_fetch_parse_timeout_option(lua_State *L,
     ngx_msec_t *timeout, int arg);
+static ngx_int_t ngx_http_lua_fetch_parse_boolean_option(lua_State *L,
+    ngx_uint_t *flag, int arg, const char *name);
 static ngx_http_lua_fetch_t *ngx_http_lua_fetch_create(lua_State *L);
 static ngx_int_t ngx_http_lua_fetch_parse_uri(ngx_http_lua_fetch_t *fetch,
     ngx_str_t *url);
@@ -130,6 +136,7 @@ static ngx_int_t ngx_http_lua_fetch_ssl_handshake(
     ngx_http_lua_fetch_t *fetch);
 static void ngx_http_lua_fetch_ssl_handshake_handler(ngx_connection_t *c);
 static ngx_int_t ngx_http_lua_fetch_ssl_name(ngx_http_lua_fetch_t *fetch);
+static ngx_int_t ngx_http_lua_fetch_ssl_verify(ngx_http_lua_fetch_t *fetch);
 static void ngx_http_lua_fetch_ssl_cleanup(void *data);
 #endif
 static void ngx_http_lua_fetch_send_request_handler(ngx_event_t *ev);
@@ -211,8 +218,9 @@ static ngx_http_lua_fetch_keepalive_pool_t
     ngx_http_lua_fetch_keepalive_pool;
 
 #if (NGX_HTTP_SSL)
-static ngx_ssl_t     ngx_http_lua_fetch_ssl;
-static ngx_cycle_t  *ngx_http_lua_fetch_ssl_cycle;
+static ngx_ssl_t      ngx_http_lua_fetch_ssl;
+static ngx_cycle_t   *ngx_http_lua_fetch_ssl_cycle;
+static ngx_uint_t     ngx_http_lua_fetch_ssl_trust_loaded;
 #endif
 
 
@@ -519,6 +527,30 @@ ngx_http_lua_fetch_parse_options(lua_State *L, ngx_http_lua_fetch_t *fetch,
                 return NGX_ERROR;
             }
 
+        } else if (len == sizeof("tls_verify") - 1
+                   && ngx_strncmp(key, "tls_verify",
+                                  sizeof("tls_verify") - 1)
+                      == 0)
+        {
+            if (ngx_http_lua_fetch_parse_boolean_option(
+                    L, &fetch->tls_verify, arg, "tls_verify")
+                != NGX_OK)
+            {
+                return NGX_ERROR;
+            }
+
+        } else if (len == sizeof("tls_verify_host") - 1
+                   && ngx_strncmp(key, "tls_verify_host",
+                                  sizeof("tls_verify_host") - 1)
+                      == 0)
+        {
+            if (ngx_http_lua_fetch_parse_boolean_option(
+                    L, &fetch->tls_verify_host, arg, "tls_verify_host")
+                != NGX_OK)
+            {
+                return NGX_ERROR;
+            }
+
         } else {
             lua_pop(L, 2);
             luaL_argerror(L, arg, "unsupported fetch option");
@@ -553,6 +585,23 @@ ngx_http_lua_fetch_parse_timeout_option(lua_State *L, ngx_msec_t *timeout,
     }
 
     *timeout = (ngx_msec_t) value;
+
+    return NGX_OK;
+}
+
+
+static ngx_int_t
+ngx_http_lua_fetch_parse_boolean_option(lua_State *L, ngx_uint_t *flag,
+    int arg, const char *name)
+{
+    if (!lua_isboolean(L, -1)) {
+        luaL_argerror(L, arg, "boolean fetch option expected");
+        return NGX_ERROR;
+    }
+
+    *flag = lua_toboolean(L, -1) ? 1 : 0;
+
+    (void) name;
 
     return NGX_OK;
 }
@@ -602,6 +651,8 @@ ngx_http_lua_fetch_create(lua_State *L)
     fetch->keepalive = 1;
     fetch->ssl = 0;
     fetch->has_target = 0;
+    fetch->tls_verify = 1;
+    fetch->tls_verify_host = 1;
     fetch->chunked_body = 0;
     fetch->header_only = 0;
     fetch->failed = 0;
@@ -1116,6 +1167,14 @@ ngx_http_lua_fetch_ssl_init(ngx_log_t *log)
         return NGX_ERROR;
     }
 
+    ngx_http_lua_fetch_ssl_trust_loaded =
+        SSL_CTX_set_default_verify_paths(ngx_http_lua_fetch_ssl.ctx) == 1;
+
+    if (!ngx_http_lua_fetch_ssl_trust_loaded) {
+        ngx_ssl_error(NGX_LOG_ERR, log, 0,
+                      "SSL_CTX_set_default_verify_paths() failed");
+    }
+
     cln = ngx_pool_cleanup_add(ngx_cycle->pool, 0);
     if (cln == NULL) {
         ngx_http_lua_fetch_ssl_cleanup(&ngx_http_lua_fetch_ssl);
@@ -1151,6 +1210,15 @@ ngx_http_lua_fetch_ssl_start(ngx_http_lua_fetch_t *fetch)
         return NGX_ERROR;
     }
 
+    if (fetch->tls_verify && !ngx_http_lua_fetch_ssl_trust_loaded) {
+        ngx_http_lua_fetch_fail(fetch, "fetch SSL trusted CA load failed");
+        return NGX_ERROR;
+    }
+
+    SSL_set_verify(c->ssl->connection,
+                   fetch->tls_verify ? SSL_VERIFY_PEER : SSL_VERIFY_NONE,
+                   NULL);
+
     if (ngx_http_lua_fetch_ssl_name(fetch) != NGX_OK) {
         ngx_http_lua_fetch_fail(fetch, "fetch SSL server name failed");
         return NGX_ERROR;
@@ -1176,12 +1244,17 @@ ngx_http_lua_fetch_ssl_start(ngx_http_lua_fetch_t *fetch)
 static ngx_int_t
 ngx_http_lua_fetch_ssl_handshake(ngx_http_lua_fetch_t *fetch)
 {
+    long               verify;
     ngx_connection_t  *c;
 
     c = fetch->peer.connection;
 
     if (c->ssl->handshaked) {
         fetch->r->connection->log->action = NULL;
+
+        if (ngx_http_lua_fetch_ssl_verify(fetch) != NGX_OK) {
+            return NGX_ERROR;
+        }
 
         if (!c->ssl->sendfile) {
             c->sendfile = 0;
@@ -1199,6 +1272,18 @@ ngx_http_lua_fetch_ssl_handshake(ngx_http_lua_fetch_t *fetch)
     if (c->write->timedout) {
         ngx_http_lua_fetch_fail(fetch, "fetch SSL handshake timed out");
         return NGX_ERROR;
+    }
+
+    if (fetch->tls_verify) {
+        verify = SSL_get_verify_result(c->ssl->connection);
+        if (verify != X509_V_OK) {
+            ngx_log_error(NGX_LOG_ERR, fetch->r->connection->log, 0,
+                          "fetch SSL certificate verify error: (%l:%s)",
+                          verify, X509_verify_cert_error_string(verify));
+            ngx_http_lua_fetch_fail(fetch,
+                                    "fetch SSL certificate verify failed");
+            return NGX_ERROR;
+        }
     }
 
     ngx_http_lua_fetch_fail(fetch, "fetch SSL handshake failed");
@@ -1219,6 +1304,43 @@ ngx_http_lua_fetch_ssl_handshake_handler(ngx_connection_t *c)
     }
 
     ngx_http_lua_fetch_resume(fetch);
+}
+
+
+static ngx_int_t
+ngx_http_lua_fetch_ssl_verify(ngx_http_lua_fetch_t *fetch)
+{
+    long               rc;
+    ngx_connection_t  *c;
+
+    if (!fetch->tls_verify) {
+        return NGX_OK;
+    }
+
+    c = fetch->peer.connection;
+
+    rc = SSL_get_verify_result(c->ssl->connection);
+    if (rc != X509_V_OK) {
+        ngx_log_error(NGX_LOG_ERR, fetch->r->connection->log, 0,
+                      "fetch SSL certificate verify error: (%l:%s)",
+                      rc, X509_verify_cert_error_string(rc));
+        ngx_http_lua_fetch_fail(fetch,
+                                "fetch SSL certificate verify failed");
+        return NGX_ERROR;
+    }
+
+    if (fetch->tls_verify_host
+        && ngx_ssl_check_host(c, &fetch->host) != NGX_OK)
+    {
+        ngx_log_error(NGX_LOG_ERR, fetch->r->connection->log, 0,
+                      "fetch SSL certificate does not match \"%V\"",
+                      &fetch->host);
+        ngx_http_lua_fetch_fail(fetch,
+                                "fetch SSL certificate host mismatch");
+        return NGX_ERROR;
+    }
+
+    return NGX_OK;
 }
 
 
@@ -1276,6 +1398,7 @@ ngx_http_lua_fetch_ssl_cleanup(void *data)
 
     if (ssl == &ngx_http_lua_fetch_ssl) {
         ngx_http_lua_fetch_ssl_cycle = NULL;
+        ngx_http_lua_fetch_ssl_trust_loaded = 0;
     }
 }
 
@@ -2547,6 +2670,8 @@ ngx_http_lua_fetch_keepalive_copy_key(
 
     item->port = fetch->port;
     item->ssl = fetch->ssl;
+    item->tls_verify = fetch->tls_verify;
+    item->tls_verify_host = fetch->tls_verify_host;
 
     return NGX_OK;
 }
@@ -2582,6 +2707,8 @@ ngx_http_lua_fetch_keepalive_match(
 {
     if (item->connection == NULL
         || item->ssl != fetch->ssl
+        || item->tls_verify != fetch->tls_verify
+        || item->tls_verify_host != fetch->tls_verify_host
         || item->port != fetch->port
         || item->scheme.len != fetch->scheme.len
         || item->host.len != fetch->host.len)

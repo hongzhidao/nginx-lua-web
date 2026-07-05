@@ -803,7 +803,7 @@ app:all("*", function(request)
         local response, err = fetch(https_fetch_url, {
             method = "POST",
             body = body,
-        })
+        }, { tls_verify = false })
 
         if response == nil or response.status ~= 200 then
             return Response.new({
@@ -822,6 +822,29 @@ app:all("*", function(request)
         return Response.new({
             status = 200,
             body = text_stream("fetch HTTPS response"),
+        })
+    end
+
+    if request.url:match("/lua%-fetch%-https%-verify%-fail$") then
+        local response, err = fetch(https_fetch_url)
+
+        if response ~= nil then
+            return Response.new({
+                status = 500,
+                body = text_stream("fetch HTTPS verify returned response"),
+            })
+        end
+
+        if err ~= "fetch SSL certificate verify failed" then
+            return Response.new({
+                status = 500,
+                body = text_stream(err or "fetch HTTPS verify error missing"),
+            })
+        end
+
+        return Response.new({
+            status = 200,
+            body = text_stream("fetch HTTPS verify failed"),
         })
     end
 
@@ -1368,6 +1391,10 @@ http {
         }
 
         location /lua-fetch-https {
+            lua_web_file $TEST_ROOT/app-fetch.lua;
+        }
+
+        location /lua-fetch-https-verify-fail {
             lua_web_file $TEST_ROOT/app-fetch.lua;
         }
 
