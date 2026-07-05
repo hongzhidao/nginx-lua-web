@@ -134,6 +134,12 @@ ngx_lua_web_request_index(lua_State *L)
         return 1;
     }
 
+    if (len == 8 && ngx_strncmp(name, "bodyUsed", 8) == 0) {
+        lua_pushboolean(L, request->body != NULL
+                           && ngx_lua_web_stream_body_used(request->body));
+        return 1;
+    }
+
     if (len == 3 && ngx_strncmp(name, "url", 3) == 0) {
         lua_pushlstring(L, (const char *) request->url.data,
                         request->url.len);

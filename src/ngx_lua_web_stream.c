@@ -26,6 +26,7 @@ struct ngx_lua_web_stream_s {
     unsigned  closed:1;
     unsigned  errored:1;
     unsigned  locked:1;
+    unsigned  body_used:1;
 };
 
 
@@ -185,6 +186,13 @@ ngx_lua_web_stream_get(lua_State *L, int index)
 }
 
 
+ngx_uint_t
+ngx_lua_web_stream_body_used(ngx_lua_web_stream_t *stream)
+{
+    return stream->body_used;
+}
+
+
 void
 ngx_lua_web_stream_register(lua_State *L)
 {
@@ -260,6 +268,7 @@ ngx_lua_web_stream_read(ngx_lua_web_stream_t *stream, ngx_pool_t *pool,
 
     value->data = NULL;
     value->len = 0;
+    stream->body_used = 1;
 
     rc = ngx_lua_web_stream_read_buffered(stream, pool, value);
     if (rc != NGX_AGAIN) {

@@ -197,11 +197,33 @@ app:all("*", function(request)
         })
     end
 
+    if request.bodyUsed then
+        return Response.new({
+            status = 500,
+            body = text_stream("request body should start unused"),
+        })
+    end
+
     local reader = request.body:getReader()
+
+    if request.bodyUsed then
+        return Response.new({
+            status = 500,
+            body = text_stream("request body used before read"),
+        })
+    end
+
     local chunks = {}
 
     while true do
         local result = reader:read()
+        if not request.bodyUsed then
+            return Response.new({
+                status = 500,
+                body = text_stream("request body used missing after read"),
+            })
+        end
+
         if result.done then
             break
         end
@@ -459,6 +481,13 @@ app:all("*", function(request)
         return Response.new({
             status = 500,
             body = text_stream("request body should be nil"),
+        })
+    end
+
+    if request.bodyUsed then
+        return Response.new({
+            status = 500,
+            body = text_stream("request bodyUsed should be false without body"),
         })
     end
 
