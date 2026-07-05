@@ -87,6 +87,11 @@ Response.new({
     headers = { ["content-type"] = "text/plain" },
     body = stream,
 })
+
+Response.json({ ok = true }, {
+    status = 201,
+    headers = { ["x-test"] = "one" },
+})
 ```
 
 Properties:
@@ -97,7 +102,10 @@ Properties:
 - `response.bodyUsed`
 
 `status` must be from `200` to `599`. Status `204`, `205` and `304` cannot have
-a body. Body values must be `ReadableStream` objects.
+a body. Body values for `Response.new()` must be `ReadableStream` objects.
+`Response.json(value, init?)` serializes `value` with `JSON.stringify()`, sets
+`content-type: application/json` unless `init.headers` already provides a
+content type, and rejects `init.body`.
 
 ### Headers
 
@@ -229,3 +237,31 @@ local response, err = fetch(input, init, options)
 On upstream/network failures, `fetch()` returns `nil, err`. Invalid arguments
 raise Lua errors. Response bodies are `ReadableStream` objects, except `HEAD`
 and no-body responses where `response.body == nil`.
+
+## Lua Runtime APIs
+
+### JSON
+
+```lua
+local text = JSON.stringify({
+    ok = true,
+    items = { "one", "two", JSON.null },
+})
+
+local value = JSON.parse('{"ok":true,"missing":null}')
+```
+
+Methods and values:
+
+- `JSON.stringify(value)`: encodes Lua values as JSON text.
+- `JSON.parse(text)`: parses JSON text into Lua values.
+- `JSON.null`: singleton used for parsed JSON `null`.
+
+`JSON.stringify(nil)` and `JSON.stringify(JSON.null)` both encode as `null`.
+`JSON.parse()` returns `JSON.null` for JSON `null`, so object fields with null
+values remain present in Lua tables.
+
+Lua tables with contiguous positive integer keys `1..n` encode as JSON arrays.
+Other tables encode as JSON objects and require string keys. Sparse or mixed
+tables raise Lua errors. Unsupported values such as functions, userdata and
+threads also raise Lua errors.

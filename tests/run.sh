@@ -902,6 +902,164 @@ end)
 return app
 EOF
 
+cat > "$TEST_ROOT/app-json.lua" <<'EOF'
+local function text_stream(text)
+    return ReadableStream.new({
+        start = function(controller)
+            controller:enqueue(text)
+            controller:close()
+        end,
+    })
+end
+
+local function expect_bad(fn, message)
+    local ok = pcall(fn)
+    if ok then
+        error(message)
+    end
+end
+
+local app = App.new()
+
+app:all("*", function(request)
+    if request.url:match("/lua%-json%-response%-custom%-type$") then
+        return Response.json({ ok = true }, {
+            headers = { ["content-type"] = "application/problem+json" },
+        })
+    end
+
+    if request.url:match("/lua%-json%-response%-errors$") then
+        local ok, err = pcall(function()
+            expect_bad(function()
+                Response.json({ ok = true }, { status = 204 })
+            end, "Response.json accepted 204 body")
+
+            expect_bad(function()
+                Response.json({ ok = true }, { body = text_stream("bad") })
+            end, "Response.json accepted init body")
+        end)
+
+        if not ok then
+            return Response.new({
+                status = 500,
+                body = text_stream(err),
+            })
+        end
+
+        return Response.new({
+            status = 200,
+            body = text_stream("Response.json rejects invalid init"),
+        })
+    end
+
+    if request.url:match("/lua%-json%-response$") then
+        return Response.json({
+            ok = true,
+            count = 3,
+            items = { 1, "two", JSON.null },
+            message = "hello",
+        }, {
+            status = 201,
+            headers = { ["X-JSON-Test"] = "ok" },
+        })
+    end
+
+    local ok, err = pcall(function()
+        if JSON.stringify(nil) ~= "null" then
+            error("JSON.stringify nil mismatch")
+        end
+        if JSON.stringify(JSON.null) ~= "null" then
+            error("JSON.stringify null mismatch")
+        end
+        if JSON.stringify(true) ~= "true" then
+            error("JSON.stringify true mismatch")
+        end
+        if JSON.stringify(false) ~= "false" then
+            error("JSON.stringify false mismatch")
+        end
+        if JSON.stringify({ "a", 2, false, JSON.null }) ~= '["a",2,false,null]' then
+            error("JSON.stringify array mismatch")
+        end
+        if JSON.stringify({}) ~= "{}" then
+            error("JSON.stringify empty table mismatch")
+        end
+        if JSON.stringify("line\nquote\"slash\\\1") ~= "\"line\\nquote\\\"slash\\\\\\u0001\"" then
+            error("JSON.stringify string escape mismatch")
+        end
+
+        local parsed = JSON.parse([[
+            {
+                "ok": true,
+                "count": 3,
+                "items": [1, "two", null],
+                "message": "hello\nworld",
+                "unicode": "\u0041\ud83d\ude00"
+            }
+        ]])
+
+        if parsed.ok ~= true then
+            error("JSON.parse boolean mismatch")
+        end
+        if parsed.count ~= 3 then
+            error("JSON.parse number mismatch")
+        end
+        if parsed.items[1] ~= 1 or parsed.items[2] ~= "two" then
+            error("JSON.parse array mismatch")
+        end
+        if parsed.items[3] ~= JSON.null then
+            error("JSON.parse null mismatch")
+        end
+        if parsed.message ~= "hello\nworld" then
+            error("JSON.parse string escape mismatch")
+        end
+        if parsed.unicode ~= "A" .. string.char(0xf0, 0x9f, 0x98, 0x80) then
+            error("JSON.parse unicode mismatch")
+        end
+        if JSON.stringify(parsed.items) ~= '[1,"two",null]' then
+            error("JSON.stringify parsed null mismatch")
+        end
+
+        expect_bad(function()
+            JSON.parse("[1,]")
+        end, "JSON.parse accepted trailing comma")
+
+        expect_bad(function()
+            JSON.parse("\"\\ud800\"")
+        end, "JSON.parse accepted unpaired surrogate")
+
+        expect_bad(function()
+            JSON.parse("1e9999")
+        end, "JSON.parse accepted non-finite number")
+
+        expect_bad(function()
+            JSON.stringify(function() end)
+        end, "JSON.stringify accepted function")
+
+        expect_bad(function()
+            JSON.stringify({ [2] = "bad" })
+        end, "JSON.stringify accepted sparse array")
+
+        expect_bad(function()
+            JSON.stringify({ "bad", key = "value" })
+        end, "JSON.stringify accepted mixed table")
+    end)
+
+    if not ok then
+        return Response.new({
+            status = 500,
+            body = text_stream(err),
+        })
+    end
+
+    return Response.new({
+        status = 200,
+        body = text_stream("JSON.stringify and JSON.parse"),
+    })
+end)
+
+return app
+EOF
+
 cat > "$TEST_ROOT/app-url.lua" <<'EOF'
 local function text_stream(text)
     return ReadableStream.new({
@@ -2050,6 +2208,10 @@ http {
             lua_web_file $TEST_ROOT/app-headers-new.lua;
         }
 
+        location /lua-json {
+            lua_web_file $TEST_ROOT/app-json.lua;
+        }
+
         location /lua-url {
             lua_web_file $TEST_ROOT/app-url.lua;
         }
@@ -2358,7 +2520,8 @@ for test_file in \
     test_headers.py \
     test_url.py \
     test_stream.py \
-    test_fetch.py
+    test_fetch.py \
+    test_json.py
 do
     TEST_NGINX_PORT="$PORT" \
     TEST_NGINX_ROOT="$TEST_ROOT" \

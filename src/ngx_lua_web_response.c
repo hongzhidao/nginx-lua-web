@@ -4,6 +4,7 @@
 
 
 #include "ngx_lua_web.h"
+#include "ngx_lua.h"
 
 #include <lauxlib.h>
 
@@ -15,6 +16,7 @@
 
 
 static int ngx_lua_web_response_new(lua_State *L);
+static int ngx_lua_web_response_json(lua_State *L);
 static int ngx_lua_web_response_index(lua_State *L);
 static int ngx_lua_web_response_gc(lua_State *L);
 static void ngx_lua_web_response_init(lua_State *L,
@@ -24,12 +26,19 @@ static void ngx_lua_web_response_init_status(lua_State *L,
 static void ngx_lua_web_response_init_body(lua_State *L,
     ngx_lua_web_response_t *response, int init_index, int arg,
     int response_index);
+static void ngx_lua_web_response_init_json(lua_State *L,
+    ngx_lua_web_response_t *response, int init_index, int arg);
+static void ngx_lua_web_response_init_headers(lua_State *L,
+    ngx_lua_web_response_t *response, int init_index, int arg);
+static void ngx_lua_web_response_reject_body_field(lua_State *L,
+    int init_index, int arg);
+static ngx_uint_t ngx_lua_web_response_headers_has(lua_State *L,
+    ngx_lua_web_headers_t *headers, const char *name, size_t len);
 static ngx_uint_t ngx_lua_web_response_has_null_body_status(
     ngx_uint_t status);
-
-
 static const luaL_Reg  ngx_lua_web_response_global_methods[] = {
     { "new", ngx_lua_web_response_new },
+    { "json", ngx_lua_web_response_json },
     { NULL, NULL }
 };
 
@@ -126,6 +135,81 @@ ngx_lua_web_response_new(lua_State *L)
 
 
 static int
+ngx_lua_web_response_json(lua_State *L)
+{
+    int                      nargs, init_index, response_index;
+    size_t                   len;
+    const char              *json;
+    ngx_lua_ctx_t           *ctx;
+    ngx_lua_web_stream_t    *body;
+    ngx_lua_web_response_t  *response;
+
+    nargs = lua_gettop(L);
+
+    if (nargs == 0 || nargs > 2) {
+        return luaL_error(L, "Response.json() takes value and optional init");
+    }
+
+    if (nargs == 2 && !lua_isnil(L, 2) && !lua_istable(L, 2)) {
+        return luaL_argerror(L, 2, "table expected");
+    }
+
+    init_index = (nargs == 2 && !lua_isnil(L, 2)) ? lua_absindex(L, 2) : 0;
+
+    ngx_lua_json_encode(L, 1);
+
+    json = lua_tolstring(L, -1, &len);
+
+    response = ngx_lua_web_response_create(L);
+    if (response == NULL) {
+        return luaL_error(L, "no memory");
+    }
+
+    response_index = lua_absindex(L, -1);
+
+    if (init_index != 0) {
+        ngx_lua_web_response_init_json(L, response, init_index, 2);
+    }
+
+    if (ngx_lua_web_response_has_null_body_status(response->status)) {
+        return luaL_argerror(L, init_index == 0 ? 1 : 2,
+                             "body is not allowed for this status");
+    }
+
+    if (!ngx_lua_web_response_headers_has(L, response->headers,
+                                          "content-type",
+                                          sizeof("content-type") - 1))
+    {
+        ngx_lua_web_headers_set(L, response->headers, "content-type",
+                                sizeof("content-type") - 1,
+                                "application/json",
+                                sizeof("application/json") - 1);
+    }
+
+    ctx = ngx_lua_get_ctx(L);
+
+    body = ngx_lua_web_stream_create(L, ctx->pool);
+    if (body == NULL) {
+        return luaL_error(L, "no memory");
+    }
+
+    if (ngx_lua_web_stream_enqueue_string(body, ctx->pool, (u_char *) json,
+                                          len)
+        != NGX_OK)
+    {
+        return luaL_error(L, "no memory");
+    }
+
+    ngx_lua_web_stream_close(body);
+
+    response->body = body;
+    lua_setiuservalue(L, response_index, 2);
+
+    return 1;
+}
+
+
+static int
 ngx_lua_web_response_index(lua_State *L)
 {
     size_t                  len;
@@ -189,7 +273,6 @@ static void
 ngx_lua_web_response_init(lua_State *L, ngx_lua_web_response_t *response,
     int init_index, int arg)
 {
-    int  headers_index;
     int  response_index;
 
     response_index = lua_absindex(L, -1);
@@ -198,6 +281,28 @@ ngx_lua_web_response_init(lua_State *L, ngx_lua_web_response_t *response,
     ngx_lua_web_response_init_status(L, response, init_index, arg);
     ngx_lua_web_response_init_body(L, response, init_index, arg,
                                    response_index);
+
+    ngx_lua_web_response_init_headers(L, response, init_index, arg);
+}
+
+
+static void
+ngx_lua_web_response_init_json(lua_State *L,
+    ngx_lua_web_response_t *response, int init_index, int arg)
+{
+    init_index = lua_absindex(L, init_index);
+
+    ngx_lua_web_response_init_status(L, response, init_index, arg);
+    ngx_lua_web_response_reject_body_field(L, init_index, arg);
+    ngx_lua_web_response_init_headers(L, response, init_index, arg);
+}
+
+
+static void
+ngx_lua_web_response_init_headers(lua_State *L,
+    ngx_lua_web_response_t *response, int init_index, int arg)
+{
+    int  headers_index;
 
     lua_getfield(L, init_index, "headers");
 
@@ -213,6 +318,51 @@ ngx_lua_web_response_init(lua_State *L, ngx_lua_web_response_t *response,
 
     ngx_lua_web_headers_init(L, response->headers, headers_index, arg);
     lua_pop(L, 1);
+}
+
+
+static void
+ngx_lua_web_response_reject_body_field(lua_State *L, int init_index, int arg)
+{
+    init_index = lua_absindex(L, init_index);
+
+    lua_getfield(L, init_index, "body");
+
+    if (!lua_isnil(L, -1)) {
+        luaL_argerror(L, arg, "body is not allowed");
+    }
+
+    lua_pop(L, 1);
+}
+
+
+static ngx_uint_t
+ngx_lua_web_response_headers_has(lua_State *L,
+    ngx_lua_web_headers_t *headers, const char *name, size_t len)
+{
+    size_t      i, n;
+    ngx_str_t  header_name, value;
+
+    (void) L;
+
+    n = ngx_lua_web_headers_count(headers);
+
+    for (i = 0; i < n; i++) {
+        if (ngx_lua_web_headers_get_entry(headers, i, &header_name, &value)
+            != NGX_OK)
+        {
+            (void) luaL_error(L, "Response headers are invalid");
+            return 0;
+        }
+
+        if (header_name.len == len
+            && ngx_strncasecmp(header_name.data, (u_char *) name, len) == 0)
+        {
+            return 1;
+        }
+    }
+
+    return 0;
 }
 
 

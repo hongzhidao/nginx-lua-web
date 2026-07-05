@@ -550,6 +550,7 @@ ngx_http_lua_create_main_conf(ngx_conf_t *cf)
     ngx_lua_web_search_params_register(conf->lua);
     ngx_lua_web_stream_register(conf->lua);
     ngx_http_lua_fetch_register(conf->lua);
+    ngx_lua_json_register(conf->lua);
 
     cln->handler = ngx_http_lua_cleanup_vm;
     cln->data = conf;

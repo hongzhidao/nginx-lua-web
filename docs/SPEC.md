@@ -13,16 +13,17 @@
 
 | 业务 | 功能数 | 开发完成度 | 测试完成度 |
 | --- | --- | --- | --- |
-| 整体 | 119 | 100.0% | 100.0% |
+| 整体 | 124 | 100.0% | 100.0% |
 | Module | 6 | 100.0% | 100.0% |
 | App | 12 | 100.0% | 100.0% |
 | Request | 11 | 100.0% | 100.0% |
-| Response | 12 | 100.0% | 100.0% |
+| Response | 13 | 100.0% | 100.0% |
 | Headers | 12 | 100.0% | 100.0% |
 | URL | 20 | 100.0% | 100.0% |
 | URLSearchParams | 15 | 100.0% | 100.0% |
 | ReadableStream | 11 | 100.0% | 100.0% |
 | fetch | 20 | 100.0% | 100.0% |
+| JSON | 4 | 100.0% | 100.0% |
 
 ## Module
 
@@ -75,6 +76,7 @@
 | 业务 | 功能 | 是否开发 | 是否测试 |
 | --- | --- | --- | --- |
 | Response | `Response.new(init?)` | 是 | 是 |
+| Response | `Response.json(value, init?)` | 是 | 是 |
 | Response | 默认 `status = 200` | 是 | 是 |
 | Response | `response.status` | 是 | 是 |
 | Response | `response.headers` | 是 | 是 |
@@ -190,9 +192,19 @@
 | fetch | 可配置 connect/send/read/keepalive timeout | 是 | 是 |
 | fetch | `fetch(Request, init)` 合并规则 | 是 | 是 |
 
+## Lua Runtime APIs
+
+### JSON
+
+| 业务 | 功能 | 是否开发 | 是否测试 |
+| --- | --- | --- | --- |
+| JSON | `JSON.stringify(value)` | 是 | 是 |
+| JSON | `JSON.parse(text)` | 是 | 是 |
+| JSON | `JSON.null` 表示 parsed null | 是 | 是 |
+| JSON | 非法 JSON / 不支持值报错 | 是 | 是 |
+
 ## 近期建议顺序
 
 | 业务 | 功能 | 是否开发 | 是否测试 |
 | --- | --- | --- | --- |
-| 近期任务 | `Response.json(value, init?)` | 否 | 否 |
 | 近期任务 | `app:put/patch/delete/options/head` | 否 | 否 |
