@@ -35,6 +35,7 @@ struct ngx_http_lua_fetch_s {
     ngx_str_t                   host;
     ngx_str_t                   authority;
     ngx_str_t                   uri;
+    ngx_str_t                   target;
     in_port_t                   port;
     ngx_str_t                   peer_name;
     ngx_buf_t                  *write_buf;
@@ -52,6 +53,7 @@ struct ngx_http_lua_fetch_s {
     unsigned                    header_only:1;
     unsigned                    keepalive:1;
     unsigned                    ssl:1;
+    unsigned                    has_target:1;
     unsigned                    failed:1;
 };
 
@@ -63,11 +65,16 @@ static void ngx_http_lua_fetch_resume(ngx_http_lua_fetch_t *fetch);
 static int ngx_http_lua_fetch_push_result(lua_State *L,
     ngx_http_lua_fetch_t *fetch);
 
-static ngx_lua_web_request_t *ngx_http_lua_fetch_normalize_request(
-    lua_State *L);
-static ngx_http_lua_fetch_t *ngx_http_lua_fetch_create(lua_State *L,
-    ngx_lua_web_request_t *request);
-static ngx_int_t ngx_http_lua_fetch_parse_target(
+static ngx_int_t ngx_http_lua_fetch_parse_args(lua_State *L,
+    ngx_http_lua_fetch_t *fetch);
+static ngx_int_t ngx_http_lua_fetch_normalize_request(lua_State *L,
+    ngx_http_lua_fetch_t *fetch, int nargs);
+static ngx_int_t ngx_http_lua_fetch_parse_options(lua_State *L,
+    ngx_http_lua_fetch_t *fetch, int index, int arg);
+static ngx_http_lua_fetch_t *ngx_http_lua_fetch_create(lua_State *L);
+static ngx_int_t ngx_http_lua_fetch_parse_uri(ngx_http_lua_fetch_t *fetch,
+    ngx_str_t *url);
+static ngx_int_t ngx_http_lua_fetch_parse_origin(
     ngx_http_lua_fetch_t *fetch);
 
 static ngx_int_t ngx_http_lua_fetch_create_request(
@@ -143,20 +150,25 @@ ngx_http_lua_fetch(lua_State *L)
 {
     ngx_int_t                rc;
     ngx_http_lua_fetch_t    *fetch;
-    ngx_lua_web_request_t   *request;
 
-    request = ngx_http_lua_fetch_normalize_request(L);
+    fetch = ngx_http_lua_fetch_create(L);
+    if (fetch == NULL) {
+        return lua_error(L);
+    }
+
+    if (ngx_http_lua_fetch_parse_args(L, fetch) != NGX_OK) {
+        return luaL_error(L, "fetch request state is invalid");
+    }
 
     lua_replace(L, 1);
     lua_settop(L, 1);
 
-    if (request == NULL) {
-        return luaL_error(L, "fetch request state is invalid");
+    if (ngx_http_lua_fetch_parse_origin(fetch) != NGX_OK) {
+        return ngx_http_lua_fetch_push_result(L, fetch);
     }
 
-    fetch = ngx_http_lua_fetch_create(L, request);
-    if (fetch == NULL) {
-        return lua_error(L);
+    if (ngx_http_lua_fetch_create_request(fetch) != NGX_OK) {
+        return luaL_error(L, "no memory");
     }
 
     rc = ngx_http_lua_fetch_connect(fetch);
@@ -218,35 +230,59 @@ ngx_http_lua_fetch_push_result(lua_State *L, ngx_http_lua_fetch_t *fetch)
 }
 
 
-static ngx_lua_web_request_t *
-ngx_http_lua_fetch_normalize_request(lua_State *L)
+static ngx_int_t
+ngx_http_lua_fetch_parse_args(lua_State *L, ngx_http_lua_fetch_t *fetch)
 {
-    int                     nargs;
+    int  nargs;
+
+    nargs = lua_gettop(L);
+
+    if (nargs < 1 || nargs > 3) {
+        (void) luaL_error(L,
+                          "fetch() takes input, optional init, and options");
+        return NGX_ERROR;
+    }
+
+    if (nargs >= 2 && !lua_isnil(L, 2) && !lua_istable(L, 2)) {
+        (void) luaL_argerror(L, 2, "table expected");
+        return NGX_ERROR;
+    }
+
+    if (nargs == 3 && !lua_isnil(L, 3) && !lua_istable(L, 3)) {
+        (void) luaL_argerror(L, 3, "table expected");
+        return NGX_ERROR;
+    }
+
+    if (ngx_http_lua_fetch_normalize_request(L, fetch, nargs) != NGX_OK) {
+        return NGX_ERROR;
+    }
+
+    if (nargs < 3) {
+        return NGX_OK;
+    }
+
+    return ngx_http_lua_fetch_parse_options(L, fetch, 3, 3);
+}
+
+
+static ngx_int_t
+ngx_http_lua_fetch_normalize_request(lua_State *L,
+    ngx_http_lua_fetch_t *fetch, int nargs)
+{
     size_t                  url_len;
     const char             *url;
     ngx_lua_web_request_t  *request;
 
-    nargs = lua_gettop(L);
-
-    if (nargs < 1 || nargs > 2) {
-        (void) luaL_error(L, "fetch() takes input and optional init");
-        return NULL;
-    }
-
-    if (nargs == 2 && !lua_isnil(L, 2) && !lua_istable(L, 2)) {
-        (void) luaL_argerror(L, 2, "table expected");
-        return NULL;
-    }
-
     request = ngx_lua_web_request_get(L, 1);
     if (request != NULL) {
-        if (nargs == 1 || lua_isnil(L, 2)) {
-            lua_pushvalue(L, 1);
-            return request;
+        if (nargs >= 2 && !lua_isnil(L, 2)) {
+            (void) luaL_error(L, "fetch(Request, init) is not supported yet");
+            return NGX_ERROR;
         }
 
-        (void) luaL_error(L, "fetch(Request, init) is not supported yet");
-        return NULL;
+        lua_pushvalue(L, 1);
+        fetch->request = request;
+        return NGX_OK;
     }
 
     if (lua_type(L, 1) == LUA_TSTRING) {
@@ -255,10 +291,10 @@ ngx_http_lua_fetch_normalize_request(lua_State *L)
         request = ngx_lua_web_request_create(L);
         if (request == NULL) {
             (void) luaL_error(L, "no memory");
-            return NULL;
+            return NGX_ERROR;
         }
 
-        if (nargs == 2 && !lua_isnil(L, 2)) {
+        if (nargs >= 2 && !lua_isnil(L, 2)) {
             ngx_lua_web_request_init(L, request, 2, 2);
         }
 
@@ -266,35 +302,100 @@ ngx_http_lua_fetch_normalize_request(lua_State *L)
             != NGX_OK)
         {
             (void) luaL_error(L, "no memory");
-            return NULL;
+            return NGX_ERROR;
         }
 
-        return request;
+        fetch->request = request;
+        return NGX_OK;
     }
 
     if (lua_istable(L, 1)) {
         request = ngx_lua_web_request_create(L);
         if (request == NULL) {
             (void) luaL_error(L, "no memory");
-            return NULL;
+            return NGX_ERROR;
         }
 
         ngx_lua_web_request_init(L, request, 1, 1);
 
-        if (nargs == 2 && !lua_isnil(L, 2)) {
+        if (nargs >= 2 && !lua_isnil(L, 2)) {
             ngx_lua_web_request_init(L, request, 2, 2);
         }
 
-        return request;
+        fetch->request = request;
+        return NGX_OK;
     }
 
     (void) luaL_argerror(L, 1, "Request, string, or table expected");
-    return NULL;
+    return NGX_ERROR;
+}
+
+
+static ngx_int_t
+ngx_http_lua_fetch_parse_options(lua_State *L, ngx_http_lua_fetch_t *fetch,
+    int index, int arg)
+{
+    size_t       len;
+    const char  *key, *value;
+
+    if (index > lua_gettop(L) || lua_isnil(L, index)) {
+        return NGX_OK;
+    }
+
+    index = lua_absindex(L, index);
+
+    lua_pushnil(L);
+
+    while (lua_next(L, index) != 0) {
+        if (lua_type(L, -2) != LUA_TSTRING) {
+            lua_pop(L, 2);
+            luaL_argerror(L, arg, "fetch option keys must be strings");
+            return NGX_ERROR;
+        }
+
+        key = lua_tolstring(L, -2, &len);
+        if (len != sizeof("target") - 1
+            || ngx_strncmp(key, "target", sizeof("target") - 1) != 0)
+        {
+            lua_pop(L, 2);
+            luaL_argerror(L, arg, "unsupported fetch option");
+            return NGX_ERROR;
+        }
+
+        if (lua_type(L, -1) != LUA_TSTRING) {
+            lua_pop(L, 2);
+            luaL_argerror(L, arg, "target must be a string");
+            return NGX_ERROR;
+        }
+
+        value = lua_tolstring(L, -1, &len);
+        fetch->target.len = len;
+
+        if (len == 0) {
+            fetch->target.data = (u_char *) "";
+
+        } else {
+            fetch->target.data = ngx_pnalloc(fetch->pool, len);
+            if (fetch->target.data == NULL) {
+                lua_pop(L, 2);
+                luaL_error(L, "no memory");
+                return NGX_ERROR;
+            }
+
+            ngx_memcpy(fetch->target.data, value, len);
+        }
+
+        fetch->has_target = 1;
+
+        lua_pop(L, 1);
+    }
+
+    return NGX_OK;
 }
 
 
 static ngx_http_lua_fetch_t *
-ngx_http_lua_fetch_create(lua_State *L, ngx_lua_web_request_t *request)
+ngx_http_lua_fetch_create(lua_State *L)
 {
     ngx_lua_ctx_t          *ctx;
     ngx_http_request_t     *r;
@@ -321,7 +422,7 @@ ngx_http_lua_fetch_create(lua_State *L, ngx_lua_web_request_t *request)
 
     fetch->ctx = ctx;
     fetch->r = r;
-    fetch->request = request;
+    fetch->request = NULL;
     fetch->response = NULL;
     fetch->response_body = NULL;
     fetch->pool = ctx->pool;
@@ -331,6 +432,7 @@ ngx_http_lua_fetch_create(lua_State *L, ngx_lua_web_request_t *request)
     fetch->request_body_sent = 0;
     fetch->keepalive = 1;
     fetch->ssl = 0;
+    fetch->has_target = 0;
     fetch->chunked_body = 0;
     fetch->header_only = 0;
     fetch->failed = 0;
@@ -346,34 +448,6 @@ ngx_http_lua_fetch_create(lua_State *L, ngx_lua_web_request_t *request)
 
     ngx_str_set(&fetch->peer_name, "fetch upstream");
 
-    if (ngx_http_lua_fetch_parse_target(fetch) != NGX_OK) {
-        return fetch;
-    }
-
-    if (fetch->ssl) {
-        ngx_http_lua_fetch_fail(fetch, "fetch https is not supported yet");
-        return fetch;
-    }
-
-    if (fetch->peer.socklen > (socklen_t) sizeof(ngx_sockaddr_t)) {
-        ngx_http_lua_fetch_fail(fetch, "fetch connect target is too large");
-        return fetch;
-    }
-
-    ngx_memcpy(&fetch->sockaddr, fetch->peer.sockaddr, fetch->peer.socklen);
-
-    if (ngx_http_lua_fetch_create_request(fetch) != NGX_OK) {
-        (void) luaL_error(L, "no memory");
-        return NULL;
-    }
-
-    fetch->peer.sockaddr = &fetch->sockaddr.sockaddr;
-    fetch->peer.name = &fetch->peer_name;
-    fetch->peer.get = ngx_event_get_peer;
-    fetch->peer.log = r->connection->log;
-    fetch->peer.log_error = NGX_ERROR_ERR;
-    fetch->peer.tries = 1;
-
     cln = ngx_pool_cleanup_add(ctx->pool, 0);
     if (cln == NULL) {
         (void) luaL_error(L, "no memory");
@@ -388,43 +462,31 @@ ngx_http_lua_fetch_create(lua_State *L, ngx_lua_web_request_t *request)
 
 
 static ngx_int_t
-ngx_http_lua_fetch_parse_target(ngx_http_lua_fetch_t *fetch)
+ngx_http_lua_fetch_parse_uri(ngx_http_lua_fetch_t *fetch, ngx_str_t *url)
 {
-    u_char     *p, *last, *authority, *path, *query, *fragment, *uri;
-    ngx_url_t   url;
+    u_char  *p, *last, *authority, *path, *query, *fragment, *uri;
 
-    p = fetch->request->url.data;
-    last = p + fetch->request->url.len;
+    p = url->data;
+    last = p + url->len;
 
-    if (fetch->request->url.len < sizeof("http://") - 1) {
+    if (url->len >= sizeof("http://") - 1
+        && ngx_strncasecmp(p, (u_char *) "http://", sizeof("http://") - 1)
+           == 0)
+    {
+        authority = p + sizeof("http://") - 1;
+
+    } else if (url->len >= sizeof("https://") - 1
+               && ngx_strncasecmp(p, (u_char *) "https://",
+                                  sizeof("https://") - 1)
+                  == 0)
+    {
+        authority = p + sizeof("https://") - 1;
+
+    } else {
         ngx_http_lua_fetch_fail(fetch, "fetch URL must be absolute");
         return NGX_ERROR;
     }
 
-    if ((size_t) (last - p) >= sizeof("https://") - 1
-        && ngx_strncasecmp(p, (u_char *) "https://",
-                           sizeof("https://") - 1)
-           == 0)
-    {
-        fetch->scheme.data = p;
-        fetch->scheme.len = sizeof("https") - 1;
-        fetch->ssl = 1;
-        ngx_http_lua_fetch_fail(fetch, "fetch https is not supported yet");
-        return NGX_ERROR;
-    }
-
-    if (ngx_strncasecmp(p, (u_char *) "http://", sizeof("http://") - 1)
-        != 0)
-    {
-        ngx_http_lua_fetch_fail(fetch, "fetch URL scheme is not supported");
-        return NGX_ERROR;
-    }
-
-    fetch->scheme.data = p;
-    fetch->scheme.len = sizeof("http") - 1;
-    fetch->ssl = 0;
-
-    authority = p + sizeof("http://") - 1;
     fragment = ngx_strlchr(authority, last, '#');
     if (fragment != NULL) {
         last = fragment;
@@ -465,30 +527,143 @@ ngx_http_lua_fetch_parse_target(ngx_http_lua_fetch_t *fetch)
         return NGX_ERROR;
     }
 
-    fetch->authority.data = authority;
-    fetch->authority.len = last - authority;
+    return NGX_OK;
+}
 
-    ngx_memzero(&url, sizeof(ngx_url_t));
-    url.url = fetch->authority;
-    url.default_port = 80;
-    url.no_resolve = 1;
 
-    if (ngx_parse_url(fetch->pool, &url) != NGX_OK) {
-        ngx_http_lua_fetch_fail(fetch, "fetch URL host is invalid");
+static ngx_int_t
+ngx_http_lua_fetch_parse_origin(ngx_http_lua_fetch_t *fetch)
+{
+    u_char              *p, *last, *authority, *path, *query, *fragment;
+    ngx_url_t            parsed;
+    ngx_http_request_t  *r;
+    ngx_str_t           *url;
+    ngx_uint_t           target;
+
+    if (ngx_http_lua_fetch_parse_uri(fetch, &fetch->request->url) != NGX_OK) {
         return NGX_ERROR;
     }
 
-    if (url.naddrs == 0) {
+    target = fetch->has_target;
+    url = target ? &fetch->target : &fetch->request->url;
+
+    p = url->data;
+    last = p + url->len;
+
+    if (url->len < sizeof("http://") - 1) {
+        ngx_http_lua_fetch_fail(fetch, target
+                                ? "fetch target must be an absolute origin"
+                                : "fetch URL must be absolute");
+        return NGX_ERROR;
+    }
+
+    if (url->len >= sizeof("https://") - 1
+        && ngx_strncasecmp(p, (u_char *) "https://",
+                           sizeof("https://") - 1)
+           == 0)
+    {
+        fetch->scheme.data = p;
+        fetch->scheme.len = sizeof("https") - 1;
+        fetch->ssl = 1;
+        ngx_http_lua_fetch_fail(fetch, "fetch https is not supported yet");
+        return NGX_ERROR;
+    }
+
+    if (ngx_strncasecmp(p, (u_char *) "http://", sizeof("http://") - 1)
+        != 0)
+    {
+        ngx_http_lua_fetch_fail(fetch, target
+                                ? "fetch target scheme is not supported"
+                                : "fetch URL scheme is not supported");
+        return NGX_ERROR;
+    }
+
+    fetch->scheme.data = p;
+    fetch->scheme.len = sizeof("http") - 1;
+    fetch->ssl = 0;
+
+    authority = p + sizeof("http://") - 1;
+
+    fragment = ngx_strlchr(authority, last, '#');
+    if (fragment != NULL) {
+        if (target) {
+            ngx_http_lua_fetch_fail(fetch,
+                                    "fetch target must be an origin");
+            return NGX_ERROR;
+        }
+
+        last = fragment;
+    }
+
+    path = ngx_strlchr(authority, last, '/');
+    query = ngx_strlchr(authority, last, '?');
+
+    if (target && query != NULL) {
+        ngx_http_lua_fetch_fail(fetch, "fetch target must be an origin");
+        return NGX_ERROR;
+    }
+
+    if (path == NULL || (query != NULL && query < path)) {
+        path = query;
+    }
+
+    if (target && path != NULL && path + 1 != last) {
+        ngx_http_lua_fetch_fail(fetch, "fetch target must be an origin");
+        return NGX_ERROR;
+    }
+
+    if (path != NULL) {
+        last = path;
+    }
+
+    if (authority == last) {
+        ngx_http_lua_fetch_fail(fetch, target
+                                ? "fetch target host is invalid"
+                                : "fetch URL host is invalid");
+        return NGX_ERROR;
+    }
+
+    fetch->authority.data = authority;
+    fetch->authority.len = last - authority;
+
+    ngx_memzero(&parsed, sizeof(ngx_url_t));
+    parsed.url = fetch->authority;
+    parsed.default_port = 80;
+    parsed.no_resolve = 1;
+
+    if (ngx_parse_url(fetch->pool, &parsed) != NGX_OK) {
+        ngx_http_lua_fetch_fail(fetch, target
+                                ? "fetch target host is invalid"
+                                : "fetch URL host is invalid");
+        return NGX_ERROR;
+    }
+
+    if (parsed.naddrs == 0) {
         ngx_http_lua_fetch_fail(fetch, "fetch DNS resolve is not supported yet");
         return NGX_ERROR;
     }
 
-    fetch->host = url.host;
-    fetch->port = url.port;
+    if (parsed.addrs[0].socklen > (socklen_t) sizeof(ngx_sockaddr_t)) {
+        ngx_http_lua_fetch_fail(fetch, "fetch connect target is too large");
+        return NGX_ERROR;
+    }
+
+    fetch->host = parsed.host;
+    fetch->port = parsed.port;
     fetch->peer_name = fetch->authority;
-    fetch->peer.sockaddr = url.addrs[0].sockaddr;
-    fetch->peer.socklen = url.addrs[0].socklen;
+
+    ngx_memcpy(&fetch->sockaddr, parsed.addrs[0].sockaddr,
+               parsed.addrs[0].socklen);
+
+    r = fetch->r;
+
+    fetch->peer.sockaddr = &fetch->sockaddr.sockaddr;
+    fetch->peer.socklen = parsed.addrs[0].socklen;
     fetch->peer.name = &fetch->peer_name;
+    fetch->peer.get = ngx_event_get_peer;
+    fetch->peer.log = r->connection->log;
+    fetch->peer.log_error = NGX_ERROR_ERR;
+    fetch->peer.tries = 1;
 
     return NGX_OK;
 }
@@ -551,10 +726,6 @@ ngx_http_lua_fetch_connect(ngx_http_lua_fetch_t *fetch)
 {
     ngx_int_t          rc;
     ngx_connection_t  *c;
-
-    if (fetch->failed) {
-        return NGX_ERROR;
-    }
 
     rc = ngx_event_connect_peer(&fetch->peer);
 

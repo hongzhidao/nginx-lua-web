@@ -33,6 +33,24 @@ s.close()
 PY
 )}
 
+UPSTREAM_PORT=${UPSTREAM_PORT:-$(python3 - "$PORT" <<'PY'
+import socket
+import sys
+
+used = int(sys.argv[1])
+
+while True:
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    port = s.getsockname()[1]
+    s.close()
+
+    if port != used:
+        print(port)
+        break
+PY
+)}
+
 rm -rf "$TEST_ROOT"
 mkdir -p "$TEST_ROOT/conf" "$TEST_ROOT/logs" "$TEST_ROOT/client_body_temp"
 mkdir -p "$TEST_ROOT/proxy_temp" "$TEST_ROOT/fastcgi_temp"
@@ -545,6 +563,7 @@ local function text_stream(text)
 end
 
 local app = App.new()
+local fetch_target = "http://127.0.0.1:__UPSTREAM_PORT__"
 
 local function upstream_url(request)
     return request.url:gsub("/lua%-fetch.*$", "/fetch-upstream")
@@ -602,11 +621,7 @@ app:all("*", function(request)
         })
     end
 
-    local response, err = fetch(Request.new({
-        url = url,
-        method = request.method,
-        body = request.body,
-    }))
+    local response, err = fetch(request, nil, { target = fetch_target })
 
     if response == nil or response.status ~= 200 then
         return Response.new({
@@ -623,6 +638,8 @@ end)
 
 return app
 EOF
+
+sed -i "s/__UPSTREAM_PORT__/$UPSTREAM_PORT/g" "$TEST_ROOT/app-fetch.lua"
 
 cat > "$TEST_ROOT/app-fetch-body-after-yield.lua" <<'EOF'
 local function text_stream(text)
@@ -1018,6 +1035,14 @@ http {
 
         location /lua-coroutine-disabled {
             lua_web_file $TEST_ROOT/app-coroutine-disabled.lua;
+        }
+    }
+
+    server {
+        listen 127.0.0.1:$UPSTREAM_PORT;
+
+        location /lua-fetch {
+            lua_web_file $TEST_ROOT/app-fetch-upstream.lua;
         }
     }
 }
