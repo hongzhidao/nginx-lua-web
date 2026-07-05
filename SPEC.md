@@ -7,6 +7,24 @@
 - 是否开发：`是` 表示已有实现，`部分` 表示已有基础能力但语义未完整，`否` 表示尚未实现。
 - 是否测试：`是` 表示已有自动化覆盖，`部分` 表示只被其他场景间接覆盖或覆盖不完整，`否` 表示尚无自动化覆盖。
 
+## 完成度
+
+统计口径：不包含“近期建议顺序”；`是` 记 1，`部分` 记 0.5，`否` 记 0。
+
+| 业务 | 功能数 | 开发完成度 | 测试完成度 |
+| --- | --- | --- | --- |
+| 整体 | 178 | 66.6% | 64.9% |
+| Request | 11 | 100.0% | 100.0% |
+| Response | 13 | 80.8% | 80.8% |
+| Headers | 12 | 100.0% | 100.0% |
+| URL | 27 | 75.9% | 75.9% |
+| URLSearchParams | 23 | 73.9% | 71.7% |
+| ReadableStream | 22 | 50.0% | 45.5% |
+| fetch | 31 | 62.9% | 62.9% |
+| App | 12 | 91.7% | 91.7% |
+| Module | 15 | 40.0% | 30.0% |
+| 候选 Web APIs | 12 | 0.0% | 0.0% |
+
 ## Request
 
 | 业务 | 功能 | 是否开发 | 是否测试 |
@@ -29,28 +47,15 @@
 | --- | --- | --- | --- |
 | Response | `Response.new(init?)` | 是 | 是 |
 | Response | 默认 `status = 200` | 是 | 是 |
-| Response | 默认 `response.headers` 为空 `Headers` | 是 | 是 |
-| Response | 默认 `response.body == nil` | 是 | 是 |
 | Response | `response.status` | 是 | 是 |
 | Response | `response.headers` | 是 | 是 |
 | Response | `response.body` | 是 | 是 |
-| Response | 构造时传 `status` | 是 | 是 |
-| Response | 构造时传 `headers` | 是 | 是 |
-| Response | 构造时传 `body` | 是 | 是 |
 | Response | body 支持 `ReadableStream` | 是 | 是 |
 | Response | 校验 status 范围 `200..599` | 是 | 是 |
-| Response | 非 `ReadableStream` body 报错 | 是 | 是 |
 | Response | `204` / `205` / `304` 禁止带 body | 是 | 是 |
 | Response | 发送响应 headers 到 nginx | 是 | 是 |
-| Response | `content-type` header 映射到 nginx `content_type` | 是 | 是 |
 | Response | 流式发送响应 body | 是 | 是 |
-| Response | `Response.json(value, init?)` | 否 | 否 |
-| Response | `Response.redirect(url, status?)` | 否 | 否 |
-| Response | `response:text()` | 否 | 否 |
-| Response | `response:json()` | 否 | 否 |
-| Response | `response:clone()` | 否 | 否 |
 | Response | body used 状态 | 否 | 否 |
-| Response | status text | 否 | 否 |
 | Response | 完整 response header 校验 | 部分 | 部分 |
 | Response | 自动 `content-type` 设置 | 否 | 否 |
 
@@ -63,21 +68,13 @@
 | Headers | 从另一个 `Headers` 复制 | 是 | 是 |
 | Headers | `headers:get(name)` | 是 | 是 |
 | Headers | header name 大小写不敏感查询 | 是 | 是 |
-| Headers | 内部 header name 小写化 | 是 | 部分 |
+| Headers | 内部 header name 小写化 | 是 | 是 |
 | Headers | `Request.new({ headers = ... })` 复制 headers | 是 | 是 |
 | Headers | `Response.new({ headers = ... })` 复制 headers | 是 | 是 |
-| Headers | `headers:append(name, value)` | 否 | 否 |
-| Headers | `headers:set(name, value)` | 否 | 否 |
-| Headers | `headers:delete(name)` | 否 | 否 |
-| Headers | `headers:has(name)` | 否 | 否 |
-| Headers | `headers:getSetCookie()` | 否 | 否 |
-| Headers | `headers:entries()` | 否 | 否 |
-| Headers | `headers:keys()` | 否 | 否 |
-| Headers | `headers:values()` | 否 | 否 |
-| Headers | Lua 迭代器协议 | 否 | 否 |
-| Headers | 重复 header 标准语义 | 否 | 否 |
-| Headers | `set-cookie` 特殊处理 | 否 | 否 |
-| Headers | header name/value 合法性校验 | 否 | 否 |
+| Headers | `headers:set(name, value)` | 是 | 是 |
+| Headers | `headers:has(name)` | 是 | 是 |
+| Headers | `headers:delete(name)` | 是 | 是 |
+| Headers | `headers:entries()` | 是 | 是 |
 
 ## URL
 
@@ -217,18 +214,7 @@
 | App | 按 HTTP method 区分 handler | 是 | 是 |
 | App | handler 返回 `Response` | 是 | 是 |
 | App | 无匹配 handler 返回 404 | 是 | 是 |
-| App | `app:put(pattern, handler)` | 否 | 否 |
-| App | `app:patch(pattern, handler)` | 否 | 否 |
-| App | `app:delete(pattern, handler)` | 否 | 否 |
-| App | `app:options(pattern, handler)` | 否 | 否 |
-| App | `app:head(pattern, handler)` | 否 | 否 |
 | App | 路由参数，例如 `/users/:id` | 否 | 否 |
-| App | query/body 参数解析 helper | 否 | 否 |
-| App | 中间件 | 否 | 否 |
-| App | 嵌套路由 | 否 | 否 |
-| App | 自定义 404 handler | 否 | 否 |
-| App | 自定义 error handler | 否 | 否 |
-| App | app 缓存和 reload 策略 | 否 | 否 |
 
 ## Module
 
@@ -271,10 +257,6 @@
 
 | 业务 | 功能 | 是否开发 | 是否测试 |
 | --- | --- | --- | --- |
-| 近期任务 | `Headers:has(name)` | 否 | 否 |
-| 近期任务 | `Headers:set(name, value)` | 否 | 否 |
-| 近期任务 | `Headers:append(name, value)` | 否 | 否 |
-| 近期任务 | `Headers:delete(name)` | 否 | 否 |
 | 近期任务 | `Response.json(value, init?)` | 否 | 否 |
 | 近期任务 | `fetch(Request, init)` 合并规则 | 否 | 否 |
 | 近期任务 | `app:put/patch/delete/options/head` | 否 | 否 |

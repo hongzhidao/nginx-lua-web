@@ -26,6 +26,11 @@ struct ngx_lua_web_headers_s {
 
 static int ngx_lua_web_headers_new(lua_State *L);
 static int ngx_lua_web_headers_get_method(lua_State *L);
+static int ngx_lua_web_headers_set_method(lua_State *L);
+static int ngx_lua_web_headers_has_method(lua_State *L);
+static int ngx_lua_web_headers_delete_method(lua_State *L);
+static int ngx_lua_web_headers_entries_method(lua_State *L);
+static int ngx_lua_web_headers_entries_next(lua_State *L);
 static int ngx_lua_web_headers_gc(lua_State *L);
 static void ngx_lua_web_headers_copy_from_headers(lua_State *L,
     ngx_lua_web_headers_t *headers, ngx_lua_web_headers_t *source, int arg);
@@ -55,6 +60,10 @@ static const luaL_Reg  ngx_lua_web_headers_global_methods[] = {
 
 static const luaL_Reg  ngx_lua_web_headers_methods[] = {
     { "get", ngx_lua_web_headers_get_method },
+    { "set", ngx_lua_web_headers_set_method },
+    { "has", ngx_lua_web_headers_has_method },
+    { "delete", ngx_lua_web_headers_delete_method },
+    { "entries", ngx_lua_web_headers_entries_method },
     { NULL, NULL }
 };
 
@@ -186,6 +195,153 @@ ngx_lua_web_headers_get_method(lua_State *L)
 
     lua_pushnil(L);
     return 1;
+}
+
+
+static int
+ngx_lua_web_headers_set_method(lua_State *L)
+{
+    size_t                  name_len, value_len;
+    const char             *name, *value;
+    ngx_lua_web_headers_t  *headers;
+
+    if (lua_gettop(L) != 3) {
+        return luaL_error(L, "Headers:set() takes name and value");
+    }
+
+    headers = luaL_checkudata(L, 1, NGX_LUA_WEB_HEADERS_METATABLE);
+
+    if (lua_type(L, 2) != LUA_TSTRING) {
+        return luaL_argerror(L, 2, "header name must be a string");
+    }
+
+    if (lua_type(L, 3) != LUA_TSTRING) {
+        return luaL_argerror(L, 3, "header value must be a string");
+    }
+
+    name = lua_tolstring(L, 2, &name_len);
+    value = lua_tolstring(L, 3, &value_len);
+
+    ngx_lua_web_headers_set(L, headers, name, name_len, value, value_len);
+
+    return 0;
+}
+
+
+static int
+ngx_lua_web_headers_has_method(lua_State *L)
+{
+    size_t                  i, name_len;
+    const char             *name;
+    ngx_lua_web_headers_t  *headers;
+
+    if (lua_gettop(L) != 2) {
+        return luaL_error(L, "Headers:has() takes name");
+    }
+
+    headers = luaL_checkudata(L, 1, NGX_LUA_WEB_HEADERS_METATABLE);
+
+    if (lua_type(L, 2) != LUA_TSTRING) {
+        return luaL_argerror(L, 2, "header name must be a string");
+    }
+
+    name = lua_tolstring(L, 2, &name_len);
+
+    for (i = 0; i < headers->nelts; i++) {
+        if (ngx_lua_web_headers_name_eq(&headers->elts[i].name, name,
+                                        name_len))
+        {
+            lua_pushboolean(L, 1);
+            return 1;
+        }
+    }
+
+    lua_pushboolean(L, 0);
+    return 1;
+}
+
+
+static int
+ngx_lua_web_headers_delete_method(lua_State *L)
+{
+    size_t                  i, name_len;
+    const char             *name;
+    ngx_lua_web_headers_t  *headers;
+
+    if (lua_gettop(L) != 2) {
+        return luaL_error(L, "Headers:delete() takes name");
+    }
+
+    headers = luaL_checkudata(L, 1, NGX_LUA_WEB_HEADERS_METATABLE);
+
+    if (lua_type(L, 2) != LUA_TSTRING) {
+        return luaL_argerror(L, 2, "header name must be a string");
+    }
+
+    name = lua_tolstring(L, 2, &name_len);
+
+    for (i = 0; i < headers->nelts; i++) {
+        if (ngx_lua_web_headers_name_eq(&headers->elts[i].name, name,
+                                        name_len))
+        {
+            ngx_lua_web_headers_free_entry(L, &headers->elts[i]);
+
+            if (i + 1 < headers->nelts) {
+                ngx_memmove(&headers->elts[i], &headers->elts[i + 1],
+                            (headers->nelts - i - 1)
+                            * sizeof(ngx_lua_web_header_t));
+            }
+
+            headers->nelts--;
+            break;
+        }
+    }
+
+    return 0;
+}
+
+
+static int
+ngx_lua_web_headers_entries_method(lua_State *L)
+{
+    if (lua_gettop(L) != 1) {
+        return luaL_error(L, "Headers:entries() takes no arguments");
+    }
+
+    (void) luaL_checkudata(L, 1, NGX_LUA_WEB_HEADERS_METATABLE);
+
+    lua_pushvalue(L, 1);
+    lua_pushinteger(L, 0);
+    lua_pushcclosure(L, ngx_lua_web_headers_entries_next, 2);
+
+    return 1;
+}
+
+
+static int
+ngx_lua_web_headers_entries_next(lua_State *L)
+{
+    size_t                  i;
+    ngx_lua_web_header_t   *header;
+    ngx_lua_web_headers_t  *headers;
+
+    headers = luaL_checkudata(L, lua_upvalueindex(1),
+                              NGX_LUA_WEB_HEADERS_METATABLE);
+    i = (size_t) lua_tointeger(L, lua_upvalueindex(2));
+
+    if (i >= headers->nelts) {
+        return 0;
+    }
+
+    header = &headers->elts[i];
+
+    lua_pushinteger(L, i + 1);
+    lua_replace(L, lua_upvalueindex(2));
+
+    lua_pushlstring(L, (const char *) header->name.data, header->name.len);
+    lua_pushlstring(L, (const char *) header->value.data, header->value.len);
+
+    return 2;
 }
 
 

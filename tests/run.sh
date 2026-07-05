@@ -692,6 +692,110 @@ app:all("*", function()
             error("Headers.get missing value mismatch")
         end
 
+        local set_headers = Headers.new({ ["X-Test"] = "one" })
+
+        set_headers:set("X-Test", "two")
+        if set_headers:get("X-Test") ~= "two" then
+            error("Headers.set replace mismatch")
+        end
+        if set_headers:get("x-test") ~= "two" then
+            error("Headers.set lowercase replace mismatch")
+        end
+
+        set_headers:set("X-Other", "three")
+        if set_headers:get("x-other") ~= "three" then
+            error("Headers.set new value mismatch")
+        end
+
+        set_headers:set("x-test", "four")
+        if set_headers:get("X-Test") ~= "four" then
+            error("Headers.set case-insensitive replace mismatch")
+        end
+
+        local bad_name_ok = pcall(function()
+            set_headers:set(1, "bad")
+        end)
+        if bad_name_ok then
+            error("Headers.set accepted invalid name")
+        end
+
+        local bad_value_ok = pcall(function()
+            set_headers:set("X-Bad", {})
+        end)
+        if bad_value_ok then
+            error("Headers.set accepted invalid value")
+        end
+
+        if not set_headers:has("X-Test") then
+            error("Headers.has existing header mismatch")
+        end
+        if not set_headers:has("x-other") then
+            error("Headers.has lowercase header mismatch")
+        end
+        if set_headers:has("X-Missing") then
+            error("Headers.has missing header mismatch")
+        end
+
+        local bad_has_ok = pcall(function()
+            set_headers:has({})
+        end)
+        if bad_has_ok then
+            error("Headers.has accepted invalid name")
+        end
+
+        local delete_headers = Headers.new({
+            ["X-Test"] = "one",
+            ["X-Other"] = "two",
+        })
+        delete_headers:delete("x-test")
+        if delete_headers:has("X-Test") then
+            error("Headers.delete kept deleted header")
+        end
+        if delete_headers:get("X-Test") ~= nil then
+            error("Headers.delete get deleted header mismatch")
+        end
+        if not delete_headers:has("X-Other") then
+            error("Headers.delete removed wrong header")
+        end
+        delete_headers:delete("X-Missing")
+        if not delete_headers:has("X-Other") then
+            error("Headers.delete missing header changed headers")
+        end
+
+        local bad_delete_ok = pcall(function()
+            delete_headers:delete({})
+        end)
+        if bad_delete_ok then
+            error("Headers.delete accepted invalid name")
+        end
+
+        local entry_count = 0
+        local entries = {}
+        for name, value in set_headers:entries() do
+            entry_count = entry_count + 1
+            entries[name] = value
+        end
+        if entry_count ~= 2 then
+            error("Headers.entries count mismatch")
+        end
+        if entries["x-test"] ~= "four" then
+            error("Headers.entries replaced value mismatch")
+        end
+        if entries["x-other"] ~= "three" then
+            error("Headers.entries new value mismatch")
+        end
+
+        for _ in Headers.new():entries() do
+            error("Headers.entries yielded empty headers")
+        end
+
+        local bad_entries_ok = pcall(function()
+            set_headers:entries("bad")
+        end)
+        if bad_entries_ok then
+            error("Headers.entries accepted an argument")
+        end
+
         local request = Request.new("https://example.test/headers", {
             headers = headers,
         })
