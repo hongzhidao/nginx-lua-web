@@ -673,6 +673,46 @@ end)
 return app
 EOF
 
+cat > "$TEST_ROOT/app-fetch-head.lua" <<'EOF'
+local function text_stream(text)
+    return ReadableStream.new({
+        start = function(controller)
+            controller:enqueue(text)
+            controller:close()
+        end,
+    })
+end
+
+local app = App.new()
+
+app:all("*", function()
+    local response, err = fetch("https://example.test/fetch", {
+        method = "HEAD",
+    })
+
+    if response == nil or response.status ~= 200 then
+        return Response.new({
+            status = 500,
+            body = text_stream(err or "fetch HEAD status mismatch"),
+        })
+    end
+
+    if response.body ~= nil then
+        return Response.new({
+            status = 500,
+            body = text_stream("fetch HEAD response has body"),
+        })
+    end
+
+    return Response.new({
+        status = 200,
+        body = text_stream("fetch HEAD body nil"),
+    })
+end)
+
+return app
+EOF
+
 cat > "$TEST_ROOT/app-fetch-upstream.lua" <<'EOF'
 local function text_stream(text)
     return ReadableStream.new({
@@ -687,6 +727,14 @@ local app = App.new()
 
 app:all("*", function(request)
     local chunks = {}
+
+    if request.method == "HEAD" then
+        return Response.new({
+            status = 200,
+            headers = { ["X-Fetch-Upstream"] = "ok" },
+            body = text_stream("fetch HEAD response body"),
+        })
+    end
 
     if request.body ~= nil then
         local reader = request.body:getReader()
@@ -894,6 +942,10 @@ http {
 
         location /lua-fetch-no-body {
             lua_web_file $TEST_ROOT/app-fetch-no-body.lua;
+        }
+
+        location /lua-fetch-head {
+            lua_web_file $TEST_ROOT/app-fetch-head.lua;
         }
 
         location /fetch-upstream {

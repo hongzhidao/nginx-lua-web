@@ -1028,6 +1028,10 @@ ngx_http_lua_fetch_parse_response_headers(lua_State *L,
     if (status == NGX_HTTP_NO_CONTENT
         || status == NGX_HTTP_LUA_FETCH_RESET_CONTENT
         || status == NGX_HTTP_NOT_MODIFIED
+        || (fetch->request->method.len == sizeof("HEAD") - 1
+            && ngx_strncmp(fetch->request->method.data, "HEAD",
+                           sizeof("HEAD") - 1)
+               == 0)
         || fetch->content_length_n == 0)
     {
         fetch->header_only = 1;

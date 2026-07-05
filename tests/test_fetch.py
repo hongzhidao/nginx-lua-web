@@ -33,6 +33,16 @@ def test_fetch_no_body_response_has_nil_body():
         raise AssertionError(f"expected nil fetch response body, got {body!r}")
 
 
+def test_fetch_head_response_has_nil_body():
+    status, body = request("/lua-fetch-head")
+
+    if status != 200:
+        raise AssertionError(f"expected 200, got {status}: {body!r}")
+
+    if body != "fetch HEAD body nil":
+        raise AssertionError(f"expected nil fetch HEAD body, got {body!r}")
+
+
 def test_fetch_opens_tcp_connection():
     if count_error_log("fetch connected") < 4:
         raise AssertionError("expected fetch to open TCP connections")
@@ -56,6 +66,8 @@ def main():
          test_fetch_buffers_response_body_while_caller_is_yielded),
         ("fetch no-body response has nil body",
          test_fetch_no_body_response_has_nil_body),
+        ("fetch HEAD response has nil body",
+         test_fetch_head_response_has_nil_body),
         ("fetch opens TCP connection",
          test_fetch_opens_tcp_connection),
         ("fetch reads response header",
