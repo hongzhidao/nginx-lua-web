@@ -67,7 +67,18 @@ void ngx_lua_web_headers_set(lua_State *L,
     ngx_lua_web_headers_t *headers, const char *name, size_t name_len,
     const char *value, size_t value_len);
 void ngx_lua_web_headers_register(lua_State *L);
+void ngx_lua_web_url_sync_search_params(lua_State *L,
+    ngx_lua_web_url_t *url);
 void ngx_lua_web_url_register(lua_State *L);
+ngx_lua_web_search_params_t *ngx_lua_web_search_params_create(lua_State *L);
+ngx_int_t ngx_lua_web_search_params_init_query(lua_State *L,
+    ngx_lua_web_search_params_t *params, const char *query, size_t len);
+ngx_int_t ngx_lua_web_search_params_to_string(lua_State *L,
+    ngx_lua_web_search_params_t *params, ngx_str_t *dst);
+void ngx_lua_web_search_params_free_string(lua_State *L, ngx_str_t *value);
+void ngx_lua_web_search_params_set_owner(lua_State *L,
+    ngx_lua_web_search_params_t *params, int params_index,
+    ngx_lua_web_url_t *url, int url_index);
 void ngx_lua_web_search_params_register(lua_State *L);
 ngx_lua_web_stream_t *ngx_lua_web_stream_create(lua_State *L,
     ngx_pool_t *pool);

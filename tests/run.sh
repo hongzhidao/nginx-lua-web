@@ -497,6 +497,123 @@ end)
 return app
 EOF
 
+cat > "$TEST_ROOT/app-url.lua" <<'EOF'
+local function text_stream(text)
+    return ReadableStream.new({
+        start = function(controller)
+            controller:enqueue(text)
+            controller:close()
+        end,
+    })
+end
+
+local function expect(value, message)
+    if not value then
+        error(message)
+    end
+end
+
+local app = App.new()
+
+app:all("*", function()
+    local ok, err = pcall(function()
+        local url = URL.new("HTTP://Example.TEST:80/a/./b/../c?x=1&x=2#frag")
+
+        expect(url.href == "http://example.test/a/c?x=1&x=2#frag",
+               "URL href mismatch: " .. url.href)
+        expect(tostring(url) == url.href, "URL tostring mismatch")
+        expect(url:toString() == url.href, "URL toString mismatch")
+        expect(url.origin == "http://example.test", "URL origin mismatch")
+        expect(url.protocol == "http:", "URL protocol mismatch")
+        expect(url.host == "example.test", "URL host mismatch")
+        expect(url.hostname == "example.test", "URL hostname mismatch")
+        expect(url.port == "", "URL port mismatch")
+        expect(url.pathname == "/a/c", "URL pathname mismatch")
+        expect(url.search == "?x=1&x=2", "URL search mismatch")
+        expect(url.hash == "#frag", "URL hash mismatch")
+
+        expect(url.searchParams:get("x") == "1",
+               "URL searchParams first value mismatch")
+        local all = url.searchParams:getAll("x")
+        expect(#all == 2 and all[1] == "1" and all[2] == "2",
+               "URL searchParams getAll mismatch")
+
+        url.searchParams:append("sp ace", "a b")
+        expect(url.search == "?x=1&x=2&sp+ace=a+b",
+               "URL searchParams append did not sync search: " .. url.search)
+        expect(url.href == "http://example.test/a/c?x=1&x=2&sp+ace=a+b#frag",
+               "URL searchParams append did not sync href: " .. url.href)
+
+        url.searchParams:set("x", "3")
+        expect(url.searchParams.size == 2, "URLSearchParams size mismatch")
+        expect(url.search == "?x=3&sp+ace=a+b",
+               "URLSearchParams set mismatch: " .. url.search)
+
+        url.searchParams:delete("sp ace", "a b")
+        expect(url.search == "?x=3", "URLSearchParams delete mismatch")
+
+        local relative = URL.new("../next?b=2",
+                                 "http://example.test/dir/page?old=1#h")
+        expect(relative.href == "http://example.test/next?b=2",
+               "relative URL mismatch: " .. relative.href)
+
+        local hash = URL.new("#new", relative)
+        expect(hash.href == "http://example.test/next?b=2#new",
+               "hash URL mismatch: " .. hash.href)
+
+        local params = URLSearchParams.new({
+            { "a", "1" },
+            { "a", "2" },
+            { "q", "a b" },
+        })
+        expect(params:toString() == "a=1&a=2&q=a+b",
+               "URLSearchParams toString mismatch: " .. params:toString())
+        expect(tostring(params) == params:toString(),
+               "URLSearchParams tostring mismatch")
+        expect(params:has("a", "2"), "URLSearchParams has mismatch")
+
+        params:set("a", "3")
+        expect(params:toString() == "a=3&q=a+b",
+               "URLSearchParams set mismatch: " .. params:toString())
+
+        params:delete("q", "a b")
+        expect(params:toString() == "a=3",
+               "URLSearchParams delete value mismatch: " .. params:toString())
+
+        local copied = URLSearchParams.new(params)
+        copied:append("z", "!")
+        expect(copied:toString() == "a=3&z=%21",
+               "URLSearchParams copy append mismatch: " .. copied:toString())
+        expect(params:toString() == "a=3",
+               "URLSearchParams copy shared storage")
+
+        local bad_url_ok = pcall(function()
+            URL.new("/relative")
+        end)
+        expect(not bad_url_ok, "URL.new accepted relative URL without base")
+
+        local bad_base_ok = pcall(function()
+            URL.new("relative", "not absolute")
+        end)
+        expect(not bad_base_ok, "URL.new accepted invalid base")
+    end)
+
+    if not ok then
+        return Response.new({
+            status = 500,
+            body = text_stream(err),
+        })
+    end
+
+    return Response.new({
+        status = 200,
+        body = text_stream("URL.new"),
+    })
+end)
+
+return app
+EOF
+
 cat > "$TEST_ROOT/app-stream.lua" <<'EOF'
 local function text_stream(text)
     return ReadableStream.new({
@@ -1041,6 +1158,10 @@ http {
             lua_web_file $TEST_ROOT/app-headers-new.lua;
         }
 
+        location /lua-url {
+            lua_web_file $TEST_ROOT/app-url.lua;
+        }
+
         location /lua-stream {
             lua_web_file $TEST_ROOT/app-stream.lua;
         }
@@ -1171,6 +1292,7 @@ for test_file in \
     test_requests.py \
     test_response.py \
     test_headers.py \
+    test_url.py \
     test_stream.py \
     test_fetch.py \
     test_app.py
