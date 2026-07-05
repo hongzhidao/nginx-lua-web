@@ -530,6 +530,10 @@ end
 
 local app = App.new()
 
+local function upstream_url(request)
+    return request.url:gsub("/lua%-fetch.*$", "/fetch-upstream")
+end
+
 local function read_body(response)
     if response.body == nil then
         return ""
@@ -551,6 +555,7 @@ local function read_body(response)
 end
 
 app:all("*", function(request)
+    local url = upstream_url(request)
     local body = ReadableStream.new({
         start = function(controller)
             controller:enqueue("init ")
@@ -559,7 +564,7 @@ app:all("*", function(request)
         end,
     })
 
-    local init_ok, init_err = fetch("https://example.test/fetch", {
+    local init_ok, init_err = fetch(url, {
         method = "POST",
         headers = {
             ["X-Test"] = "one",
@@ -581,7 +586,11 @@ app:all("*", function(request)
         })
     end
 
-    local response, err = fetch(request)
+    local response, err = fetch(Request.new({
+        url = url,
+        method = request.method,
+        body = request.body,
+    }))
 
     if response == nil or response.status ~= 200 then
         return Response.new({
@@ -628,7 +637,9 @@ end
 local app = App.new()
 
 app:all("*", function(request)
-    local response, err = fetch("https://example.test/fetch", {
+    local url = request.url:gsub("/lua%-fetch%-body%-after%-yield.*$",
+                                 "/fetch-upstream")
+    local response, err = fetch(url, {
         method = "POST",
         body = text_stream("yield before fetch body read"),
     })
@@ -666,8 +677,10 @@ end
 
 local app = App.new()
 
-app:all("*", function()
-    local response, err = fetch("https://example.test/fetch", {
+app:all("*", function(request)
+    local url = request.url:gsub("/lua%-fetch%-no%-body.*$",
+                                 "/fetch-upstream")
+    local response, err = fetch(url, {
         method = "POST",
         body = text_stream("fetch no body"),
     })
@@ -707,8 +720,9 @@ end
 
 local app = App.new()
 
-app:all("*", function()
-    local response, err = fetch("https://example.test/fetch", {
+app:all("*", function(request)
+    local url = request.url:gsub("/lua%-fetch%-head.*$", "/fetch-upstream")
+    local response, err = fetch(url, {
         method = "HEAD",
     })
 

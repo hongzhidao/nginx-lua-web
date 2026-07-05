@@ -31,6 +31,11 @@ struct ngx_http_lua_fetch_s {
     ngx_pool_t                 *pool;
     ngx_peer_connection_t       peer;
     ngx_sockaddr_t              sockaddr;
+    ngx_str_t                   scheme;
+    ngx_str_t                   host;
+    ngx_str_t                   authority;
+    ngx_str_t                   uri;
+    in_port_t                   port;
     ngx_str_t                   peer_name;
     ngx_buf_t                  *write_buf;
     ngx_buf_t                  *read_buf;
@@ -46,6 +51,7 @@ struct ngx_http_lua_fetch_s {
     unsigned                    request_body_sent:1;
     unsigned                    header_only:1;
     unsigned                    keepalive:1;
+    unsigned                    ssl:1;
     unsigned                    failed:1;
 };
 
@@ -61,6 +67,8 @@ static ngx_lua_web_request_t *ngx_http_lua_fetch_normalize_request(
     lua_State *L);
 static ngx_http_lua_fetch_t *ngx_http_lua_fetch_create(lua_State *L,
     ngx_lua_web_request_t *request);
+static ngx_int_t ngx_http_lua_fetch_parse_target(
+    ngx_http_lua_fetch_t *fetch);
 
 static ngx_int_t ngx_http_lua_fetch_create_request(
     ngx_http_lua_fetch_t *fetch);
@@ -322,6 +330,7 @@ ngx_http_lua_fetch_create(lua_State *L, ngx_lua_web_request_t *request)
     fetch->request_sent = 0;
     fetch->request_body_sent = 0;
     fetch->keepalive = 1;
+    fetch->ssl = 0;
     fetch->chunked_body = 0;
     fetch->header_only = 0;
     fetch->failed = 0;
@@ -337,18 +346,21 @@ ngx_http_lua_fetch_create(lua_State *L, ngx_lua_web_request_t *request)
 
     ngx_str_set(&fetch->peer_name, "fetch upstream");
 
-    if (ngx_connection_local_sockaddr(r->connection, NULL, 0) != NGX_OK) {
-        ngx_http_lua_fetch_fail(fetch, "fetch connect target unavailable");
+    if (ngx_http_lua_fetch_parse_target(fetch) != NGX_OK) {
         return fetch;
     }
 
-    if (r->connection->local_socklen > (socklen_t) sizeof(ngx_sockaddr_t)) {
+    if (fetch->ssl) {
+        ngx_http_lua_fetch_fail(fetch, "fetch https is not supported yet");
+        return fetch;
+    }
+
+    if (fetch->peer.socklen > (socklen_t) sizeof(ngx_sockaddr_t)) {
         ngx_http_lua_fetch_fail(fetch, "fetch connect target is too large");
         return fetch;
     }
 
-    ngx_memcpy(&fetch->sockaddr, r->connection->local_sockaddr,
-               r->connection->local_socklen);
+    ngx_memcpy(&fetch->sockaddr, fetch->peer.sockaddr, fetch->peer.socklen);
 
     if (ngx_http_lua_fetch_create_request(fetch) != NGX_OK) {
         (void) luaL_error(L, "no memory");
@@ -356,7 +368,6 @@ ngx_http_lua_fetch_create(lua_State *L, ngx_lua_web_request_t *request)
     }
 
     fetch->peer.sockaddr = &fetch->sockaddr.sockaddr;
-    fetch->peer.socklen = r->connection->local_socklen;
     fetch->peer.name = &fetch->peer_name;
     fetch->peer.get = ngx_event_get_peer;
     fetch->peer.log = r->connection->log;
@@ -377,6 +388,113 @@ ngx_http_lua_fetch_create(lua_State *L, ngx_lua_web_request_t *request)
 
 
 static ngx_int_t
+ngx_http_lua_fetch_parse_target(ngx_http_lua_fetch_t *fetch)
+{
+    u_char     *p, *last, *authority, *path, *query, *fragment, *uri;
+    ngx_url_t   url;
+
+    p = fetch->request->url.data;
+    last = p + fetch->request->url.len;
+
+    if (fetch->request->url.len < sizeof("http://") - 1) {
+        ngx_http_lua_fetch_fail(fetch, "fetch URL must be absolute");
+        return NGX_ERROR;
+    }
+
+    if ((size_t) (last - p) >= sizeof("https://") - 1
+        && ngx_strncasecmp(p, (u_char *) "https://",
+                           sizeof("https://") - 1)
+           == 0)
+    {
+        fetch->scheme.data = p;
+        fetch->scheme.len = sizeof("https") - 1;
+        fetch->ssl = 1;
+        ngx_http_lua_fetch_fail(fetch, "fetch https is not supported yet");
+        return NGX_ERROR;
+    }
+
+    if (ngx_strncasecmp(p, (u_char *) "http://", sizeof("http://") - 1)
+        != 0)
+    {
+        ngx_http_lua_fetch_fail(fetch, "fetch URL scheme is not supported");
+        return NGX_ERROR;
+    }
+
+    fetch->scheme.data = p;
+    fetch->scheme.len = sizeof("http") - 1;
+    fetch->ssl = 0;
+
+    authority = p + sizeof("http://") - 1;
+    fragment = ngx_strlchr(authority, last, '#');
+    if (fragment != NULL) {
+        last = fragment;
+    }
+
+    path = ngx_strlchr(authority, last, '/');
+    query = ngx_strlchr(authority, last, '?');
+
+    if (path == NULL || (query != NULL && query < path)) {
+        path = query;
+    }
+
+    if (path == NULL) {
+        fetch->uri.data = (u_char *) "/";
+        fetch->uri.len = sizeof("/") - 1;
+
+    } else if (*path == '?') {
+        fetch->uri.len = sizeof("/") - 1 + (last - path);
+        uri = ngx_pnalloc(fetch->pool, fetch->uri.len);
+        if (uri == NULL) {
+            ngx_http_lua_fetch_fail(fetch, "no memory");
+            return NGX_ERROR;
+        }
+
+        uri[0] = '/';
+        ngx_memcpy(uri + 1, path, last - path);
+        fetch->uri.data = uri;
+        last = path;
+
+    } else {
+        fetch->uri.data = path;
+        fetch->uri.len = last - path;
+        last = path;
+    }
+
+    if (authority == last) {
+        ngx_http_lua_fetch_fail(fetch, "fetch URL host is invalid");
+        return NGX_ERROR;
+    }
+
+    fetch->authority.data = authority;
+    fetch->authority.len = last - authority;
+
+    ngx_memzero(&url, sizeof(ngx_url_t));
+    url.url = fetch->authority;
+    url.default_port = 80;
+    url.no_resolve = 1;
+
+    if (ngx_parse_url(fetch->pool, &url) != NGX_OK) {
+        ngx_http_lua_fetch_fail(fetch, "fetch URL host is invalid");
+        return NGX_ERROR;
+    }
+
+    if (url.naddrs == 0) {
+        ngx_http_lua_fetch_fail(fetch, "fetch DNS resolve is not supported yet");
+        return NGX_ERROR;
+    }
+
+    fetch->host = url.host;
+    fetch->port = url.port;
+    fetch->peer_name = fetch->authority;
+    fetch->peer.sockaddr = url.addrs[0].sockaddr;
+    fetch->peer.socklen = url.addrs[0].socklen;
+    fetch->peer.name = &fetch->peer_name;
+
+    return NGX_OK;
+}
+
+
+static ngx_int_t
 ngx_http_lua_fetch_create_request(ngx_http_lua_fetch_t *fetch)
 {
     size_t                 len;
@@ -386,8 +504,10 @@ ngx_http_lua_fetch_create_request(ngx_http_lua_fetch_t *fetch)
     request = fetch->request;
 
     len = request->method.len
-          + sizeof(" /fetch-upstream HTTP/1.1" CRLF) - 1
-          + sizeof("Host: localhost" CRLF) - 1
+          + sizeof(" ") - 1 + fetch->uri.len
+          + sizeof(" HTTP/1.1" CRLF) - 1
+          + sizeof("Host: ") - 1 + fetch->authority.len
+          + sizeof(CRLF) - 1
           + sizeof("Connection: keep-alive" CRLF) - 1
           + sizeof(CRLF) - 1;
 
@@ -402,10 +522,14 @@ ngx_http_lua_fetch_create_request(ngx_http_lua_fetch_t *fetch)
 
     b->last = ngx_cpymem(b->last, request->method.data,
                          request->method.len);
-    b->last = ngx_cpymem(b->last, " /fetch-upstream HTTP/1.1" CRLF,
-                         sizeof(" /fetch-upstream HTTP/1.1" CRLF) - 1);
-    b->last = ngx_cpymem(b->last, "Host: localhost" CRLF,
-                         sizeof("Host: localhost" CRLF) - 1);
+    b->last = ngx_cpymem(b->last, " ", sizeof(" ") - 1);
+    b->last = ngx_cpymem(b->last, fetch->uri.data, fetch->uri.len);
+    b->last = ngx_cpymem(b->last, " HTTP/1.1" CRLF,
+                         sizeof(" HTTP/1.1" CRLF) - 1);
+    b->last = ngx_cpymem(b->last, "Host: ", sizeof("Host: ") - 1);
+    b->last = ngx_cpymem(b->last, fetch->authority.data,
+                         fetch->authority.len);
+    b->last = ngx_cpymem(b->last, CRLF, sizeof(CRLF) - 1);
     b->last = ngx_cpymem(b->last, "Connection: keep-alive" CRLF,
                          sizeof("Connection: keep-alive" CRLF) - 1);
 
