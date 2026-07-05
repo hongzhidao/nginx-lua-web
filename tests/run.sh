@@ -1039,6 +1039,42 @@ end)
 return app
 EOF
 
+cat > "$TEST_ROOT/app-methods.lua" <<'EOF'
+local function text_stream(text)
+    return ReadableStream.new({
+        start = function(controller)
+            controller:enqueue(text)
+            controller:close()
+        end,
+    })
+end
+
+local app = App.new()
+
+app:get("/lua-methods", function(request)
+    return Response.new({
+        status = 200,
+        body = text_stream("GET " .. request.method),
+    })
+end)
+
+app:post("/lua-methods", function(request)
+    return Response.new({
+        status = 201,
+        body = text_stream("POST " .. request.method),
+    })
+end)
+
+app:post("/lua-methods-post-only", function(request)
+    return Response.new({
+        status = 202,
+        body = text_stream("POST only " .. request.method),
+    })
+end)
+
+return app
+EOF
+
 cat > "$TEST_ROOT/app-args.lua" <<'EOF'
 local function text_stream(text)
     return ReadableStream.new({
@@ -1196,6 +1232,10 @@ http {
 
         location /lua-alt {
             lua_web_file $TEST_ROOT/app-alt.lua;
+        }
+
+        location /lua-methods {
+            lua_web_file $TEST_ROOT/app-methods.lua;
         }
 
         location /lua-app-args {

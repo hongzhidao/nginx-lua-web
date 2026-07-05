@@ -13,9 +13,11 @@
 
 
 typedef struct {
-    char    *pattern;
-    size_t   pattern_len;
-    int      handler_ref;
+    const char *method;
+    size_t      method_len;
+    char       *pattern;
+    size_t      pattern_len;
+    int         handler_ref;
 } ngx_lua_app_route_t;
 
 
@@ -28,6 +30,10 @@ struct ngx_lua_app_s {
 
 static int ngx_lua_app_new(lua_State *L);
 static int ngx_lua_app_all(lua_State *L);
+static int ngx_lua_app_get_method(lua_State *L);
+static int ngx_lua_app_post(lua_State *L);
+static int ngx_lua_app_route(lua_State *L, const char *name,
+    const char *method, size_t method_len);
 static int ngx_lua_app_gc(lua_State *L);
 static int ngx_lua_app_reserve(lua_State *L, ngx_lua_app_t *app, size_t n);
 static void *ngx_lua_app_alloc(lua_State *L, void *ptr, size_t osize,
@@ -42,6 +48,8 @@ static const luaL_Reg  ngx_lua_app_global_methods[] = {
 
 static const luaL_Reg  ngx_lua_app_methods[] = {
     { "all", ngx_lua_app_all },
+    { "get", ngx_lua_app_get_method },
+    { "post", ngx_lua_app_post },
     { NULL, NULL }
 };
 
@@ -73,11 +81,19 @@ ngx_lua_app_get(lua_State *L, int index)
 
 
 int
-ngx_lua_app_find_handler(ngx_lua_app_t *app, const char *path, size_t len)
+ngx_lua_app_find_handler(ngx_lua_app_t *app, const char *method,
+    size_t method_len, const char *path, size_t len)
 {
     size_t  i;
 
     for (i = 0; i < app->nroutes; i++) {
+        if (app->routes[i].method != NULL
+            && (app->routes[i].method_len != method_len
+                || memcmp(app->routes[i].method, method, method_len) != 0))
+        {
+            continue;
+        }
+
         if (app->routes[i].pattern_len == 1
             && app->routes[i].pattern[0] == '*')
         {
@@ -118,13 +134,35 @@ ngx_lua_app_new(lua_State *L)
 static int
 ngx_lua_app_all(lua_State *L)
 {
+    return ngx_lua_app_route(L, "all", NULL, 0);
+}
+
+
+static int
+ngx_lua_app_get_method(lua_State *L)
+{
+    return ngx_lua_app_route(L, "get", "GET", 3);
+}
+
+
+static int
+ngx_lua_app_post(lua_State *L)
+{
+    return ngx_lua_app_route(L, "post", "POST", 4);
+}
+
+
+static int
+ngx_lua_app_route(lua_State *L, const char *name, const char *method,
+    size_t method_len)
+{
     size_t                len;
     const char           *pattern;
     ngx_lua_app_t        *app;
     ngx_lua_app_route_t  *route;
 
     if (lua_gettop(L) != 3) {
-        return luaL_error(L, "App:all() takes pattern and handler");
+        return luaL_error(L, "App:%s() takes pattern and handler", name);
     }
 
     app = luaL_checkudata(L, 1, NGX_LUA_APP_METATABLE);
@@ -139,6 +177,9 @@ ngx_lua_app_all(lua_State *L)
     }
 
     route = &app->routes[app->nroutes++];
+
+    route->method = method;
+    route->method_len = method_len;
 
     route->pattern = ngx_lua_app_alloc(L, NULL, 0, len + 1);
     if (route->pattern == NULL) {

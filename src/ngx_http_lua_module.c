@@ -315,19 +315,28 @@ ngx_http_lua_run_handler(ngx_http_request_t *r, ngx_http_lua_ctx_t *ctx,
     ngx_lua_app_t *app)
 {
     int                       handler_ref;
+    ngx_int_t                 rc;
     lua_State                *co;
     ngx_http_lua_loc_conf_t  *llcf;
 
     co = ctx->co;
     llcf = ngx_http_get_module_loc_conf(r, ngx_http_lua_module);
 
-    handler_ref = ngx_lua_app_find_handler(app, (char *) r->uri.data,
-                                           r->uri.len);
+    handler_ref = ngx_lua_app_find_handler(app,
+                                           (char *) r->method_name.data,
+                                           r->method_name.len,
+                                           (char *) r->uri.data, r->uri.len);
 
     if (handler_ref == LUA_NOREF) {
         r->headers_out.status = NGX_HTTP_NOT_FOUND;
         r->headers_out.content_length_n = 0;
-        return ngx_http_send_header(r);
+        rc = ngx_http_send_header(r);
+
+        if (rc == NGX_ERROR || rc > NGX_OK || r->header_only) {
+            return rc;
+        }
+
+        return ngx_http_send_special(r, NGX_HTTP_LAST);
     }
 
     lua_pushvalue(co, 1);
