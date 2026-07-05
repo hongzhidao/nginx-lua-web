@@ -169,6 +169,63 @@ end
 local app = App.new()
 
 app:all("*", function(request)
+    if request.url:match("/lua%-body%-text$") then
+        if request.bodyUsed then
+            return Response.new({
+                status = 500,
+                body = text_stream("request text body should start unused"),
+            })
+        end
+
+        local text = request:text()
+
+        if not request.bodyUsed then
+            return Response.new({
+                status = 500,
+                body = text_stream("request text bodyUsed missing"),
+            })
+        end
+
+        local second_ok = pcall(function()
+            request:text()
+        end)
+        if second_ok then
+            return Response.new({
+                status = 500,
+                body = text_stream("request text allowed second consume"),
+            })
+        end
+
+        return Response.new({
+            status = 200,
+            body = text_stream(text),
+        })
+    end
+
+    if request.url:match("/lua%-body%-json$") then
+        local data = request:json()
+
+        if data.ok ~= true or data.count ~= 2 or data.message ~= "hello" then
+            return Response.new({
+                status = 500,
+                body = text_stream("request json mismatch"),
+            })
+        end
+
+        if not request.bodyUsed then
+            return Response.new({
+                status = 500,
+                body = text_stream("request json bodyUsed missing"),
+            })
+        end
+
+        return Response.json({
+            ok = data.ok,
+            count = data.count,
+            message = data.message,
+        })
+    end
+
     if request.method ~= "POST" then
         return Response.new({
             status = 500,
@@ -491,6 +548,30 @@ app:all("*", function(request)
         })
     end
 
+    if request:text() ~= "" then
+        return Response.new({
+            status = 500,
+            body = text_stream("request text should be empty without body"),
+        })
+    end
+
+    if request.bodyUsed then
+        return Response.new({
+            status = 500,
+            body = text_stream("request bodyUsed changed without body"),
+        })
+    end
+
+    local bad_json_ok = pcall(function()
+        request:json()
+    end)
+    if bad_json_ok then
+        return Response.new({
+            status = 500,
+            body = text_stream("request json accepted empty body"),
+        })
+    end
+
     return Response.new({
         status = 200,
         body = text_stream("request body nil"),
@@ -609,6 +690,66 @@ app:all("*", function()
         if not with_body.bodyUsed then
             error("response bodyUsed should be true after read")
         end
+
+        local text_response = Response.new({
+            body = text_stream("response text"),
+        })
+        if text_response:text() ~= "response text" then
+            error("Response:text body mismatch")
+        end
+        if not text_response.bodyUsed then
+            error("Response:text bodyUsed missing")
+        end
+
+        local second_text_ok = pcall(function()
+            text_response:text()
+        end)
+        if second_text_ok then
+            error("Response:text accepted used body")
+        end
+
+        local json_response = Response.json({
+            ok = true,
+            count = 2,
+            message = "response json",
+        })
+        local json_data = json_response:json()
+        if json_data.ok ~= true
+            or json_data.count ~= 2
+            or json_data.message ~= "response json"
+        then
+            error("Response:json body mismatch")
+        end
+        if not json_response.bodyUsed then
+            error("Response:json bodyUsed missing")
+        end
+
+        local empty_response = Response.new()
+        if empty_response:text() ~= "" then
+            error("Response:text empty body mismatch")
+        end
+        if empty_response.bodyUsed then
+            error("Response:text changed bodyUsed without body")
+        end
+
+        local empty_json_ok = pcall(function()
+            Response.new():json()
+        end)
+        if empty_json_ok then
+            error("Response:json accepted empty body")
+        end
+
+        local locked_response = Response.new({
+            body = text_stream("locked body"),
+        })
+        local locked_reader = locked_response.body:getReader()
+        local locked_text_ok = pcall(function()
+            locked_response:text()
+        end)
+        if locked_text_ok then
+            error("Response:text accepted locked body")
+        end
+        locked_reader:releaseLock()
 
         local bad_status_ok = pcall(function()
             Response.new({ status = 99 })
@@ -1459,6 +1600,74 @@ app:all("*", function(request)
         })
     end
 
+    if request.url:match("/lua%-fetch%-body%-mixin$") then
+        local url = upstream_url(request)
+        local response, err = fetch(url, {
+            method = "POST",
+            body = text_stream("json body"),
+        })
+
+        if response == nil or response.status ~= 200 then
+            return Response.new({
+                status = 500,
+                body = text_stream(err or "fetch body json status mismatch"),
+            })
+        end
+
+        local data = response:json()
+        if data.ok ~= true
+            or data.count ~= 4
+            or data.message ~= "fetch json response"
+        then
+            return Response.new({
+                status = 500,
+                body = text_stream("fetch Response:json mismatch"),
+            })
+        end
+
+        if not response.bodyUsed then
+            return Response.new({
+                status = 500,
+                body = text_stream("fetch Response:json bodyUsed missing"),
+            })
+        end
+
+        response, err = fetch(url, {
+            method = "POST",
+            body = text_stream("text body"),
+        })
+
+        if response == nil or response.status ~= 200 then
+            return Response.new({
+                status = 500,
+                body = text_stream(err or "fetch body text status mismatch"),
+            })
+        end
+
+        local text = response:text()
+        if text ~= "fetch text response" then
+            return Response.new({
+                status = 500,
+                body = text_stream("fetch Response:text mismatch"),
+            })
+        end
+
+        local second_ok = pcall(function()
+            response:json()
+        end)
+        if second_ok then
+            return Response.new({
+                status = 500,
+                body = text_stream("fetch Response methods reused body"),
+            })
+        end
+
+        return Response.new({
+            status = 200,
+            body = text_stream(data.message .. ":" .. text),
+        })
+    end
+
     if request.url:match("/lua%-fetch%-https$") then
         local body = ReadableStream.new({
             start = function(controller)
@@ -1852,6 +2061,24 @@ app:all("*", function(request)
             status = 200,
             headers = { ["X-Fetch-Upstream"] = "ok" },
             body = text_stream(string.rep("x", 262144)),
+        })
+    end
+
+    if body == "json body" then
+        return Response.json({
+            ok = true,
+            count = 4,
+            message = "fetch json response",
+        }, {
+            headers = { ["X-Fetch-Upstream"] = "ok" },
+        })
+    end
+
+    if body == "text body" then
+        return Response.new({
+            status = 200,
+            headers = { ["X-Fetch-Upstream"] = "ok" },
+            body = text_stream("fetch text response"),
         })
     end
 

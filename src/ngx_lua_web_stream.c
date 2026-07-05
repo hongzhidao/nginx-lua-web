@@ -7,6 +7,7 @@
 #include "ngx_lua.h"
 
 #include <lauxlib.h>
+#include <stdint.h>
 
 
 #define NGX_LUA_WEB_STREAM_METATABLE  "ngx_lua_web.ReadableStream"
@@ -102,6 +103,15 @@ static ngx_int_t ngx_lua_web_stream_read_buffered(
     ngx_lua_web_stream_t *stream, ngx_pool_t *pool, ngx_str_t *value);
 static ngx_int_t ngx_lua_web_stream_read_buffer(
     ngx_lua_web_stream_t *stream, ngx_pool_t *pool, ngx_str_t *value);
+static int ngx_lua_web_stream_read_all(lua_State *L,
+    ngx_lua_web_stream_t *stream, lua_KFunction continuation,
+    ngx_uint_t parse_json);
+static int ngx_lua_web_stream_read_all_finish(lua_State *L,
+    ngx_uint_t parse_json);
+static int ngx_lua_web_stream_read_text_continue(lua_State *L, int status,
+    lua_KContext ctx);
+static int ngx_lua_web_stream_read_json_continue(lua_State *L, int status,
+    lua_KContext ctx);
 static void ngx_lua_web_stream_pop_buf(ngx_lua_web_stream_t *stream,
     ngx_pool_t *pool);
 
@@ -190,6 +200,57 @@ ngx_uint_t
 ngx_lua_web_stream_body_used(ngx_lua_web_stream_t *stream)
 {
     return stream->body_used;
+}
+
+
+int
+ngx_lua_web_stream_read_text(lua_State *L, ngx_lua_web_stream_t *stream)
+{
+    if (stream == NULL) {
+        lua_pushliteral(L, "");
+        return 1;
+    }
+
+    if (stream->locked) {
+        return luaL_error(L, "body stream is locked");
+    }
+
+    if (stream->body_used) {
+        return luaL_error(L, "body stream is already used");
+    }
+
+    lua_settop(L, 1);
+    lua_newtable(L);
+
+    return ngx_lua_web_stream_read_all(L, stream,
+                                       ngx_lua_web_stream_read_text_continue,
+                                       0);
+}
+
+
+int
+ngx_lua_web_stream_read_json(lua_State *L, ngx_lua_web_stream_t *stream)
+{
+    if (stream == NULL) {
+        lua_pushliteral(L, "");
+        ngx_lua_json_decode(L, -1);
+        return 1;
+    }
+
+    if (stream->locked) {
+        return luaL_error(L, "body stream is locked");
+    }
+
+    if (stream->body_used) {
+        return luaL_error(L, "body stream is already used");
+    }
+
+    lua_settop(L, 1);
+    lua_newtable(L);
+
+    return ngx_lua_web_stream_read_all(L, stream,
+                                       ngx_lua_web_stream_read_json_continue,
+                                       1);
 }
 
 
@@ -841,6 +902,108 @@ ngx_lua_web_stream_reader_wake(void *data)
     ctx->data = NULL;
 
     resume(resume_data);
+}
+
+
+/* Whole-body readers. */
+
+static int
+ngx_lua_web_stream_read_all(lua_State *L, ngx_lua_web_stream_t *stream,
+    lua_KFunction continuation, ngx_uint_t parse_json)
+{
+    lua_Unsigned    n;
+    ngx_int_t       rc;
+    ngx_str_t       value;
+    ngx_lua_ctx_t  *ctx;
+
+    for ( ;; ) {
+        rc = ngx_lua_web_stream_read(stream, stream->pool, &value);
+
+        if (rc == NGX_OK) {
+            n = lua_rawlen(L, 2);
+            lua_pushlstring(L, (const char *) value.data, value.len);
+            lua_rawseti(L, 2, (lua_Integer) n + 1);
+            continue;
+        }
+
+        if (rc == NGX_DONE) {
+            return ngx_lua_web_stream_read_all_finish(L, parse_json);
+        }
+
+        if (rc == NGX_AGAIN) {
+            ctx = ngx_lua_get_ctx(L);
+            ngx_lua_web_stream_wait(stream, ngx_lua_web_stream_reader_wake,
+                                    ctx);
+
+            return lua_yieldk(L, 0, (lua_KContext) (intptr_t) stream,
+                              continuation);
+        }
+
+        return luaL_error(L, "ReadableStream read failed");
+    }
+}
+
+
+static int
+ngx_lua_web_stream_read_all_finish(lua_State *L, ngx_uint_t parse_json)
+{
+    size_t          len;
+    const char     *value;
+    lua_Unsigned    i, n;
+    luaL_Buffer     buffer;
+
+    luaL_buffinit(L, &buffer);
+
+    n = lua_rawlen(L, 2);
+
+    for (i = 1; i <= n; i++) {
+        lua_rawgeti(L, 2, (lua_Integer) i);
+        value = lua_tolstring(L, -1, &len);
+        luaL_addlstring(&buffer, value, len);
+        lua_pop(L, 1);
+    }
+
+    luaL_pushresult(&buffer);
+
+    if (!parse_json) {
+        return 1;
+    }
+
+    ngx_lua_json_decode(L, -1);
+
+    return 1;
+}
+
+
+static int
+ngx_lua_web_stream_read_text_continue(lua_State *L, int status,
+    lua_KContext ctx)
+{
+    ngx_lua_web_stream_t  *stream;
+
+    (void) status;
+
+    stream = (ngx_lua_web_stream_t *) (intptr_t) ctx;
+
+    return ngx_lua_web_stream_read_all(L, stream,
+                                       ngx_lua_web_stream_read_text_continue,
+                                       0);
+}
+
+
+static int
+ngx_lua_web_stream_read_json_continue(lua_State *L, int status,
+    lua_KContext ctx)
+{
+    ngx_lua_web_stream_t  *stream;
+
+    (void) status;
+
+    stream = (ngx_lua_web_stream_t *) (intptr_t) ctx;
+
+    return ngx_lua_web_stream_read_all(L, stream,
+                                       ngx_lua_web_stream_read_json_continue,
+                                       1);
 }
 
 

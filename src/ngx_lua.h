@@ -36,6 +36,7 @@ ngx_lua_app_t *ngx_lua_app_get(lua_State *L, int index);
 int ngx_lua_app_find_handler(lua_State *L, ngx_lua_app_t *app,
     const char *method, size_t method_len, const char *path, size_t len);
 void ngx_lua_json_encode(lua_State *L, int index);
+void ngx_lua_json_decode(lua_State *L, int index);
 void ngx_lua_json_register(lua_State *L);
 
 

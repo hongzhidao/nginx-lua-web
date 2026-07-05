@@ -69,6 +69,11 @@ Properties:
 - `request.body`
 - `request.bodyUsed`
 
+Methods:
+
+- `request:text()`
+- `request:json()`
+
 `init` supports:
 
 - `method`: string.
@@ -76,7 +81,8 @@ Properties:
 - `body`: `ReadableStream`.
 
 The URL is taken from the constructor input. `GET` and `HEAD` requests cannot
-have a body.
+have a body. `text()` consumes the body and returns a string. `json()` consumes
+the body and parses it with `JSON.parse()`.
 
 ### Response
 
@@ -101,11 +107,17 @@ Properties:
 - `response.body`
 - `response.bodyUsed`
 
+Methods:
+
+- `response:text()`
+- `response:json()`
+
 `status` must be from `200` to `599`. Status `204`, `205` and `304` cannot have
 a body. Body values for `Response.new()` must be `ReadableStream` objects.
 `Response.json(value, init?)` serializes `value` with `JSON.stringify()`, sets
 `content-type: application/json` unless `init.headers` already provides a
-content type, and rejects `init.body`.
+content type, and rejects `init.body`. `text()` consumes the body and returns a
+string. `json()` consumes the body and parses it with `JSON.parse()`.
 
 ### Headers
 

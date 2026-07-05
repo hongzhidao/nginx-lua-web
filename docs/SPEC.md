@@ -70,6 +70,8 @@
 | Request | `GET` / `HEAD` 请求禁止带 body | 是 | 是 |
 | Request | 构造时传 `url`、`method`、`headers`、`body` | 是 | 是 |
 | Request | `request.bodyUsed` | 是 | 是 |
+| Request | `request.text()` | 是 | 是 |
+| Request | `request.json()` | 是 | 是 |
 
 ### Response
 
@@ -88,6 +90,8 @@
 | Response | 流式发送响应 body | 是 | 是 |
 | Response | body used 状态 | 是 | 是 |
 | Response | 完整 response header 校验 | 是 | 是 |
+| Response | `response.text()` | 是 | 是 |
+| Response | `response.json()` | 是 | 是 |
 
 ### Headers
 

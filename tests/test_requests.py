@@ -1,3 +1,5 @@
+import json
+
 from lua_web_test import PORT, delayed_body_request, request, run_tests
 
 
@@ -21,6 +23,32 @@ def test_request_body_reader_yields_until_body_arrives():
 
     if body != payload:
         raise AssertionError(f"expected delayed request body, got {body!r}")
+
+
+def test_request_text_yields_until_body_arrives():
+    payload = "delayed request text body"
+    status, body = delayed_body_request("/lua-body-text", payload)
+
+    if status != 200:
+        raise AssertionError(f"expected 200, got {status}: {body!r}")
+
+    if body != payload:
+        raise AssertionError(f"expected request text body, got {body!r}")
+
+
+def test_request_json_parses_body():
+    status, body = request(
+        "/lua-body-json",
+        method="POST",
+        body='{"ok":true,"count":2,"message":"hello"}',
+        headers={"Content-Type": "application/json"},
+    )
+
+    if status != 200:
+        raise AssertionError(f"expected 200, got {status}: {body!r}")
+
+    if json.loads(body) != {"ok": True, "count": 2, "message": "hello"}:
+        raise AssertionError(f"expected request JSON echo, got {body!r}")
 
 
 def test_request_url_is_absolute():
@@ -63,6 +91,10 @@ def main():
          test_request_body_readable_stream_reader_reads_body),
         ("request body reader yields until body arrives",
          test_request_body_reader_yields_until_body_arrives),
+        ("request text yields until body arrives",
+         test_request_text_yields_until_body_arrives),
+        ("request json parses body",
+         test_request_json_parses_body),
         ("request url is absolute",
          test_request_url_is_absolute),
         ("Request.new",

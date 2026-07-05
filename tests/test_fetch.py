@@ -139,6 +139,16 @@ def test_fetch_request_input_accepts_init():
         raise AssertionError(f"expected fetch Request init merge, got {body!r}")
 
 
+def test_fetch_response_body_methods():
+    status, body = request("/lua-fetch-body-mixin")
+
+    if status != 200:
+        raise AssertionError(f"expected 200, got {status}: {body!r}")
+
+    if body != "fetch json response:fetch text response":
+        raise AssertionError(f"expected fetch body methods, got {body!r}")
+
+
 def test_fetch_read_timeout_option():
     status, body = request("/lua-fetch-timeout")
 
@@ -179,6 +189,8 @@ def main():
          test_fetch_sends_request_headers),
         ("fetch Request input accepts init",
          test_fetch_request_input_accepts_init),
+        ("fetch Response body methods",
+         test_fetch_response_body_methods),
         ("fetch read timeout option",
          test_fetch_read_timeout_option),
     ])

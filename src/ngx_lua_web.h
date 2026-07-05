@@ -86,6 +86,10 @@ ngx_lua_web_stream_t *ngx_lua_web_stream_create(lua_State *L,
     ngx_pool_t *pool);
 ngx_lua_web_stream_t *ngx_lua_web_stream_get(lua_State *L, int index);
 ngx_uint_t ngx_lua_web_stream_body_used(ngx_lua_web_stream_t *stream);
+int ngx_lua_web_stream_read_text(lua_State *L,
+    ngx_lua_web_stream_t *stream);
+int ngx_lua_web_stream_read_json(lua_State *L,
+    ngx_lua_web_stream_t *stream);
 void ngx_lua_web_stream_register(lua_State *L);
 void ngx_lua_web_stream_set_source(ngx_lua_web_stream_t *stream,
     ngx_lua_web_stream_source_t *source);

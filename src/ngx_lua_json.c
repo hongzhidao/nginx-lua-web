@@ -87,6 +87,30 @@ ngx_lua_json_encode(lua_State *L, int index)
 }
 
 
+void
+ngx_lua_json_decode(lua_State *L, int index)
+{
+    size_t                 len;
+    const char            *json;
+    ngx_lua_json_parser_t  parser;
+
+    index = lua_absindex(L, index);
+
+    json = luaL_checklstring(L, index, &len);
+
+    parser.pos = (const u_char *) json;
+    parser.last = parser.pos + len;
+
+    ngx_lua_json_parse_skip_space(&parser);
+    ngx_lua_json_parse_value(L, &parser, 0);
+    ngx_lua_json_parse_skip_space(&parser);
+
+    if (parser.pos != parser.last) {
+        (void) luaL_error(L, "invalid JSON");
+    }
+}
+
+
 static int
 ngx_lua_json_stringify(lua_State *L)
 {
@@ -103,26 +127,11 @@ ngx_lua_json_stringify(lua_State *L)
 static int
 ngx_lua_json_parse(lua_State *L)
 {
-    size_t                 len;
-    const char            *json;
-    ngx_lua_json_parser_t  parser;
-
     if (lua_gettop(L) != 1) {
         return luaL_error(L, "JSON.parse() takes text");
     }
 
-    json = luaL_checklstring(L, 1, &len);
-
-    parser.pos = (const u_char *) json;
-    parser.last = parser.pos + len;
-
-    ngx_lua_json_parse_skip_space(&parser);
-    ngx_lua_json_parse_value(L, &parser, 0);
-    ngx_lua_json_parse_skip_space(&parser);
-
-    if (parser.pos != parser.last) {
-        return luaL_error(L, "invalid JSON");
-    }
+    ngx_lua_json_decode(L, 1);
 
     return 1;
 }

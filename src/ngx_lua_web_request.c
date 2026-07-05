@@ -12,6 +12,8 @@
 
 
 static int ngx_lua_web_request_new(lua_State *L);
+static int ngx_lua_web_request_text(lua_State *L);
+static int ngx_lua_web_request_json(lua_State *L);
 static int ngx_lua_web_request_index(lua_State *L);
 static int ngx_lua_web_request_gc(lua_State *L);
 static void ngx_lua_web_request_copy(lua_State *L,
@@ -39,6 +41,8 @@ static const luaL_Reg  ngx_lua_web_request_global_methods[] = {
 
 
 static const luaL_Reg  ngx_lua_web_request_methods[] = {
+    { "text", ngx_lua_web_request_text },
+    { "json", ngx_lua_web_request_json },
     { NULL, NULL }
 };
 
@@ -105,6 +109,36 @@ ngx_lua_web_request_new(lua_State *L)
 
 
 static int
+ngx_lua_web_request_text(lua_State *L)
+{
+    ngx_lua_web_request_t  *request;
+
+    if (lua_gettop(L) != 1) {
+        return luaL_error(L, "Request:text() takes no arguments");
+    }
+
+    request = luaL_checkudata(L, 1, NGX_LUA_WEB_REQUEST_METATABLE);
+
+    return ngx_lua_web_stream_read_text(L, request->body);
+}
+
+
+static int
+ngx_lua_web_request_json(lua_State *L)
+{
+    ngx_lua_web_request_t  *request;
+
+    if (lua_gettop(L) != 1) {
+        return luaL_error(L, "Request:json() takes no arguments");
+    }
+
+    request = luaL_checkudata(L, 1, NGX_LUA_WEB_REQUEST_METATABLE);
+
+    return ngx_lua_web_stream_read_json(L, request->body);
+}
+
+
+static int
 ngx_lua_web_request_index(lua_State *L)
 {
     size_t                 len;
@@ -149,6 +183,16 @@ ngx_lua_web_request_index(lua_State *L)
     if (len == 6 && ngx_strncmp(name, "method", 6) == 0) {
         lua_pushlstring(L, (const char *) request->method.data,
                         request->method.len);
+        return 1;
+    }
+
+    if (len == 4 && ngx_strncmp(name, "text", 4) == 0) {
+        lua_pushcfunction(L, ngx_lua_web_request_text);
+        return 1;
+    }
+
+    if (len == 4 && ngx_strncmp(name, "json", 4) == 0) {
+        lua_pushcfunction(L, ngx_lua_web_request_json);
         return 1;
     }
 
