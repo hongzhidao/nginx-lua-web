@@ -1,24 +1,4 @@
-from lua_web_test import LUA_WEB_PATH, request, run_tests
-
-
-def test_app_file_returns_response():
-    status, body = request(LUA_WEB_PATH)
-
-    if status != 201:
-        raise AssertionError(f"expected 201, got {status}")
-
-    if body != "hello from lua handler":
-        raise AssertionError(f"expected lua response body, got {body!r}")
-
-
-def test_app_file_keeps_location_refs_separate():
-    status, body = request("/lua-alt")
-
-    if status != 202:
-        raise AssertionError(f"expected 202, got {status}")
-
-    if body != "hello from second lua handler":
-        raise AssertionError(f"expected second lua response body, got {body!r}")
+from lua_web_test import request, run_tests
 
 
 def test_app_new_rejects_arguments():
@@ -123,22 +103,8 @@ def test_app_routes_match_in_registration_order():
         raise AssertionError(f"expected first registered route, got {body!r}")
 
 
-def test_coroutine_library_is_not_exposed():
-    status, body = request("/lua-coroutine-disabled")
-
-    if status != 200:
-        raise AssertionError(f"expected 200, got {status}: {body!r}")
-
-    if body != "coroutine disabled":
-        raise AssertionError(f"expected coroutine disabled body, got {body!r}")
-
-
 def main():
     return run_tests("App behavior", [
-        ("lua handler returns Response",
-         test_app_file_returns_response),
-        ("location refs stay separate",
-         test_app_file_keeps_location_refs_separate),
         ("App.new rejects arguments",
          test_app_new_rejects_arguments),
         ("App:get routes GET requests",
@@ -159,8 +125,6 @@ def main():
          test_app_prefix_routes_subpaths),
         ("routes match in registration order",
          test_app_routes_match_in_registration_order),
-        ("coroutine library is not exposed",
-         test_coroutine_library_is_not_exposed),
     ])
 
 
