@@ -377,65 +377,31 @@ static ngx_int_t
 ngx_http_lua_fetch_normalize_request(lua_State *L,
     ngx_http_lua_fetch_t *fetch, int nargs)
 {
-    size_t                  url_len;
-    const char             *url;
     ngx_lua_web_request_t  *request;
 
     request = ngx_lua_web_request_get(L, 1);
-    if (request != NULL) {
-        if (nargs >= 2 && !lua_isnil(L, 2)) {
-            (void) luaL_error(L, "fetch(Request, init) is not supported yet");
-            return NGX_ERROR;
-        }
-
+    if (request != NULL && (nargs < 2 || lua_isnil(L, 2))) {
         lua_pushvalue(L, 1);
         fetch->request = request;
         return NGX_OK;
     }
 
-    if (lua_type(L, 1) == LUA_TSTRING) {
-        url = lua_tolstring(L, 1, &url_len);
-
-        request = ngx_lua_web_request_create(L);
-        if (request == NULL) {
-            (void) luaL_error(L, "no memory");
-            return NGX_ERROR;
-        }
-
-        if (nargs >= 2 && !lua_isnil(L, 2)) {
-            ngx_lua_web_request_init(L, request, 2, 2);
-        }
-
-        if (ngx_lua_web_request_set_string(L, &request->url, url, url_len)
-            != NGX_OK)
-        {
-            (void) luaL_error(L, "no memory");
-            return NGX_ERROR;
-        }
-
-        fetch->request = request;
-        return NGX_OK;
+    if (request == NULL && lua_type(L, 1) != LUA_TSTRING) {
+        (void) luaL_argerror(L, 1, "Request or string expected");
+        return NGX_ERROR;
     }
 
-    if (lua_istable(L, 1)) {
-        request = ngx_lua_web_request_create(L);
-        if (request == NULL) {
-            (void) luaL_error(L, "no memory");
-            return NGX_ERROR;
-        }
-
-        ngx_lua_web_request_init(L, request, 1, 1);
-
-        if (nargs >= 2 && !lua_isnil(L, 2)) {
-            ngx_lua_web_request_init(L, request, 2, 2);
-        }
-
-        fetch->request = request;
-        return NGX_OK;
+    request = ngx_lua_web_request_create(L);
+    if (request == NULL) {
+        (void) luaL_error(L, "no memory");
+        return NGX_ERROR;
     }
 
-    (void) luaL_argerror(L, 1, "Request, string, or table expected");
-    return NGX_ERROR;
+    ngx_lua_web_request_init(L, request, -1, 1, nargs >= 2 ? 2 : 0, 1);
+
+    fetch->request = request;
+
+    return NGX_OK;
 }
 
 

@@ -262,12 +262,16 @@ app:all("*", function()
         })
 
         Request.new()
-        Request.new({})
-        Request.new({ headers = { ["X-Test"] = "two" } })
-        Request.new({ url = "https://example.test/path", method = "POST" })
-        Request.new({ method = "POST", body = body })
-        Request.new({
-            url = "https://example.test/body",
+        Request.new("https://example.test/path")
+        Request.new("https://example.test/path", {
+            headers = { ["X-Test"] = "two" },
+        })
+        Request.new("https://example.test/path", { method = "POST" })
+        Request.new("https://example.test/body", {
+            method = "POST",
+            body = body,
+        })
+        Request.new("https://example.test/body", {
             method = "POST",
             headers = { ["X-Test"] = "one" },
             body = body,
@@ -287,8 +291,7 @@ app:all("*", function()
             error("default request body should be nil")
         end
 
-        local with_body = Request.new({
-            url = "https://example.test/body",
+        local with_body = Request.new("https://example.test/body", {
             method = "POST",
             headers = { ["X-Test"] = "one" },
             body = body,
@@ -306,15 +309,117 @@ app:all("*", function()
             error("request body stream mismatch")
         end
 
+        local from_url = Request.new("https://example.test/from-input", {
+            url = "https://bad.example/ignored",
+            method = "POST",
+            headers = { ["X-Test"] = "from-url" },
+            body = body,
+        })
+        if from_url.url ~= "https://example.test/from-input" then
+            error("Request.new string input url mismatch")
+        end
+        if from_url.method ~= "POST" then
+            error("Request.new string input method mismatch")
+        end
+        if from_url.headers:get("X-Test") ~= "from-url" then
+            error("Request.new string input headers mismatch")
+        end
+        if from_url.body ~= body then
+            error("Request.new string input body mismatch")
+        end
+
+        local copied = Request.new(with_body)
+        if copied == with_body then
+            error("Request.new Request input reused object")
+        end
+        if copied.url ~= with_body.url then
+            error("Request.new Request input url mismatch")
+        end
+        if copied.method ~= with_body.method then
+            error("Request.new Request input method mismatch")
+        end
+        if copied.headers == with_body.headers then
+            error("Request.new Request input shared headers")
+        end
+        if copied.headers:get("X-Test") ~= "one" then
+            error("Request.new Request input headers mismatch")
+        end
+        if copied.body ~= with_body.body then
+            error("Request.new Request input body mismatch")
+        end
+
+        local copied_empty_init = Request.new(with_body, {})
+        if copied_empty_init == with_body then
+            error("Request.new Request empty init reused object")
+        end
+        if copied_empty_init.url ~= with_body.url then
+            error("Request.new Request empty init url mismatch")
+        end
+        if copied_empty_init.headers == with_body.headers then
+            error("Request.new Request empty init shared headers")
+        end
+        if copied_empty_init.headers:get("X-Test") ~= "one" then
+            error("Request.new Request empty init headers mismatch")
+        end
+
+        local header_source = Request.new("https://example.test/headers", {
+            headers = {
+                ["X-Test"] = "one",
+                ["X-Old"] = "old",
+            },
+        })
+        local overridden = Request.new(header_source, {
+            url = "https://bad.example/ignored",
+            headers = { ["X-Test"] = "two" },
+        })
+        if overridden.url ~= header_source.url then
+            error("Request.new Request init changed url")
+        end
+        if overridden.headers:get("X-Test") ~= "two" then
+            error("Request.new Request init headers mismatch")
+        end
+        if overridden.headers:get("X-Old") ~= nil then
+            error("Request.new Request init merged old header")
+        end
+        if header_source.headers:get("X-Test") ~= "one"
+            or header_source.headers:get("X-Old") ~= "old"
+        then
+            error("Request.new mutated input Request")
+        end
+
+        local bad_table_input_ok = pcall(function()
+            Request.new({ url = "https://example.test/table" })
+        end)
+        if bad_table_input_ok then
+            error("Request.new accepted table input")
+        end
+
+        local bad_table_input_init_ok = pcall(function()
+            Request.new({ url = "https://example.test/table" }, {})
+        end)
+        if bad_table_input_init_ok then
+            error("Request.new accepted table input with init")
+        end
+
+        local bad_nil_input_init_ok = pcall(function()
+            Request.new(nil, {})
+        end)
+        if bad_nil_input_init_ok then
+            error("Request.new accepted nil input with init")
+        end
+
         local bad_default_body_ok = pcall(function()
-            Request.new({ body = body })
+            Request.new("https://example.test/body", { body = body })
         end)
         if bad_default_body_ok then
             error("Request.new accepted default GET body")
         end
 
         local bad_head_body_ok = pcall(function()
-            Request.new({ method = "HEAD", body = body })
+            Request.new("https://example.test/body", {
+                method = "HEAD",
+                body = body,
+            })
         end)
         if bad_head_body_ok then
             error("Request.new accepted HEAD body")
@@ -540,7 +645,9 @@ app:all("*", function()
             error("Headers.get missing value mismatch")
         end
 
-        local request = Request.new({ headers = headers })
+        local request = Request.new("https://example.test/headers", {
+            headers = headers,
+        })
         if request.headers == nil then
             error("request headers missing")
         end
@@ -843,6 +950,114 @@ app:all("*", function(request)
         })
     end
 
+    if request.url:match("/lua%-fetch%-request%-init$") then
+        local url = upstream_url(request)
+        local request_body = ReadableStream.new({
+            start = function(controller)
+                controller:enqueue("request body")
+                controller:close()
+            end,
+        })
+        local init_body = ReadableStream.new({
+            start = function(controller)
+                controller:enqueue("init ")
+                controller:enqueue("body")
+                controller:close()
+            end,
+        })
+        local fetch_request = Request.new(url, {
+            method = "POST",
+            headers = { ["X-Test"] = "request" },
+            body = request_body,
+        })
+
+        local response, err = fetch(fetch_request, {
+            url = "http://127.0.0.1:1/not-used",
+            method = "POST",
+            body = init_body,
+        })
+
+        if response == nil or response.status ~= 200 then
+            return Response.new({
+                status = 500,
+                body = text_stream(err or "fetch Request init status mismatch"),
+            })
+        end
+
+        local body = read_body(response)
+
+        if body ~= "fetch init response" then
+            return Response.new({
+                status = 500,
+                body = text_stream(body),
+            })
+        end
+
+        local empty_init_request = Request.new(url, {
+            method = "POST",
+            body = text_stream("init body"),
+        })
+
+        response, err = fetch(empty_init_request, {})
+
+        if response == nil or response.status ~= 200 then
+            return Response.new({
+                status = 500,
+                body = text_stream(err or "fetch Request empty init status mismatch"),
+            })
+        end
+
+        body = read_body(response)
+
+        if body ~= "fetch init response" then
+            return Response.new({
+                status = 500,
+                body = text_stream(body),
+            })
+        end
+
+        local header_request = Request.new(header_fetch_url, {
+            headers = {
+                ["X-Test"] = "request",
+                ["X-Old"] = "old",
+            },
+        })
+
+        response, err = fetch(header_request, {
+            headers = { ["X-Test"] = "one" },
+        })
+
+        if response == nil or response.status ~= 200 then
+            return Response.new({
+                status = 500,
+                body = text_stream(err or "fetch Request headers status mismatch"),
+            })
+        end
+
+        body = read_body(response)
+
+        if body ~= "fetch header response" then
+            return Response.new({
+                status = 500,
+                body = text_stream(body),
+            })
+        end
+
+        if header_request.headers:get("X-Test") ~= "request"
+            or header_request.headers:get("X-Old") ~= "old"
+        then
+            return Response.new({
+                status = 500,
+                body = text_stream("fetch mutated input Request"),
+            })
+        end
+
+        return Response.new({
+            status = 200,
+            body = text_stream("fetch Request init merged"),
+        })
+    end
+
     if request.url:match("/lua%-fetch%-https$") then
         local body = ReadableStream.new({
             start = function(controller)
@@ -924,6 +1139,27 @@ app:all("*", function(request)
     end
 
     local url = upstream_url(request)
+
+    local bad_table_fetch_ok = pcall(function()
+        fetch({ url = url })
+    end)
+    if bad_table_fetch_ok then
+        return Response.new({
+            status = 500,
+            body = text_stream("fetch accepted table input"),
+        })
+    end
+
+    local bad_table_fetch_init_ok = pcall(function()
+        fetch({ url = url }, {})
+    end)
+    if bad_table_fetch_init_ok then
+        return Response.new({
+            status = 500,
+            body = text_stream("fetch accepted table input with init"),
+        })
+    end
+
     local body = ReadableStream.new({
         start = function(controller)
             controller:enqueue("init ")
@@ -1455,6 +1691,10 @@ http {
             lua_web_file $TEST_ROOT/app-fetch.lua;
         }
 
+        location /lua-fetch-request-init {
+            lua_web_file $TEST_ROOT/app-fetch.lua;
+        }
+
         location /lua-fetch-timeout {
             lua_web_file $TEST_ROOT/app-fetch-timeout.lua;
         }
@@ -1607,6 +1847,9 @@ while True:
 
         elif b"transfer-encoding" in headers:
             body = b"fetch forwarded controlled Transfer-Encoding header"
+
+        elif b"x-old" in headers:
+            body = b"fetch merged request header"
 
         try:
             conn.sendall(
