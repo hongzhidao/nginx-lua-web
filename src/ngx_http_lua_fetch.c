@@ -127,6 +127,15 @@ static ngx_int_t ngx_http_lua_fetch_set_peer(ngx_http_lua_fetch_t *fetch,
 
 static ngx_int_t ngx_http_lua_fetch_create_request(
     ngx_http_lua_fetch_t *fetch);
+static ngx_int_t ngx_http_lua_fetch_add_request_headers_len(
+    ngx_http_lua_fetch_t *fetch, size_t *len);
+static ngx_int_t ngx_http_lua_fetch_write_request_headers(
+    ngx_http_lua_fetch_t *fetch, ngx_buf_t *b);
+static ngx_uint_t ngx_http_lua_fetch_skip_request_header(ngx_str_t *name);
+static ngx_uint_t ngx_http_lua_fetch_request_header_name_valid(
+    ngx_str_t *name);
+static ngx_uint_t ngx_http_lua_fetch_request_header_value_valid(
+    ngx_str_t *value);
 static ngx_int_t ngx_http_lua_fetch_connect(ngx_http_lua_fetch_t *fetch);
 static ngx_int_t ngx_http_lua_fetch_test_connect(ngx_connection_t *c);
 #if (NGX_HTTP_SSL)
@@ -261,7 +270,10 @@ ngx_http_lua_fetch(lua_State *L)
             fetch->resolver = NULL;
         }
 
-        ngx_http_lua_fetch_fail(fetch, "no memory");
+        if (!fetch->failed) {
+            ngx_http_lua_fetch_fail(fetch, "no memory");
+        }
+
         return ngx_http_lua_fetch_push_result(L, fetch);
     }
 
@@ -1017,6 +1029,10 @@ ngx_http_lua_fetch_create_request(ngx_http_lua_fetch_t *fetch)
         len += sizeof("Transfer-Encoding: chunked" CRLF) - 1;
     }
 
+    if (ngx_http_lua_fetch_add_request_headers_len(fetch, &len) != NGX_OK) {
+        return NGX_ERROR;
+    }
+
     b = ngx_create_temp_buf(fetch->pool, len);
     if (b == NULL) {
         return NGX_ERROR;
@@ -1040,11 +1056,188 @@ ngx_http_lua_fetch_create_request(ngx_http_lua_fetch_t *fetch)
                              sizeof("Transfer-Encoding: chunked" CRLF) - 1);
     }
 
+    if (ngx_http_lua_fetch_write_request_headers(fetch, b) != NGX_OK) {
+        return NGX_ERROR;
+    }
+
     b->last = ngx_cpymem(b->last, CRLF, sizeof(CRLF) - 1);
 
     fetch->write_buf = b;
 
     return NGX_OK;
+}
+
+
+static ngx_int_t
+ngx_http_lua_fetch_add_request_headers_len(ngx_http_lua_fetch_t *fetch,
+    size_t *len)
+{
+    size_t                  i, n;
+    ngx_str_t               name, value;
+    ngx_lua_web_request_t  *request;
+
+    request = fetch->request;
+
+    if (request->headers == NULL) {
+        return NGX_OK;
+    }
+
+    n = ngx_lua_web_headers_count(request->headers);
+
+    for (i = 0; i < n; i++) {
+        if (ngx_lua_web_headers_get_entry(request->headers, i, &name, &value)
+            != NGX_OK)
+        {
+            return NGX_ERROR;
+        }
+
+        if (ngx_http_lua_fetch_skip_request_header(&name)) {
+            continue;
+        }
+
+        if (!ngx_http_lua_fetch_request_header_name_valid(&name)
+            || !ngx_http_lua_fetch_request_header_value_valid(&value))
+        {
+            ngx_http_lua_fetch_fail(fetch, "fetch request header invalid");
+            return NGX_ERROR;
+        }
+
+        *len += name.len + sizeof(": ") - 1 + value.len
+                + sizeof(CRLF) - 1;
+    }
+
+    return NGX_OK;
+}
+
+
+static ngx_int_t
+ngx_http_lua_fetch_write_request_headers(ngx_http_lua_fetch_t *fetch,
+    ngx_buf_t *b)
+{
+    size_t                  i, n;
+    ngx_str_t               name, value;
+    ngx_lua_web_request_t  *request;
+
+    request = fetch->request;
+
+    if (request->headers == NULL) {
+        return NGX_OK;
+    }
+
+    n = ngx_lua_web_headers_count(request->headers);
+
+    for (i = 0; i < n; i++) {
+        if (ngx_lua_web_headers_get_entry(request->headers, i, &name, &value)
+            != NGX_OK)
+        {
+            return NGX_ERROR;
+        }
+
+        if (ngx_http_lua_fetch_skip_request_header(&name)) {
+            continue;
+        }
+
+        b->last = ngx_cpymem(b->last, name.data, name.len);
+        b->last = ngx_cpymem(b->last, ": ", sizeof(": ") - 1);
+        b->last = ngx_cpymem(b->last, value.data, value.len);
+        b->last = ngx_cpymem(b->last, CRLF, sizeof(CRLF) - 1);
+    }
+
+    return NGX_OK;
+}
+
+
+static ngx_uint_t
+ngx_http_lua_fetch_skip_request_header(ngx_str_t *name)
+{
+    return ngx_http_lua_fetch_header_is(name->data, name->len, "host",
+                                        sizeof("host") - 1)
+           || ngx_http_lua_fetch_header_is(name->data, name->len,
+                                           "connection",
+                                           sizeof("connection") - 1)
+           || ngx_http_lua_fetch_header_is(name->data, name->len,
+                                           "content-length",
+                                           sizeof("content-length") - 1)
+           || ngx_http_lua_fetch_header_is(name->data, name->len,
+                                           "transfer-encoding",
+                                           sizeof("transfer-encoding") - 1)
+           || ngx_http_lua_fetch_header_is(name->data, name->len,
+                                           "keep-alive",
+                                           sizeof("keep-alive") - 1)
+           || ngx_http_lua_fetch_header_is(name->data, name->len,
+                                           "proxy-connection",
+                                           sizeof("proxy-connection") - 1)
+           || ngx_http_lua_fetch_header_is(name->data, name->len, "te",
+                                           sizeof("te") - 1)
+           || ngx_http_lua_fetch_header_is(name->data, name->len, "trailer",
+                                           sizeof("trailer") - 1)
+           || ngx_http_lua_fetch_header_is(name->data, name->len, "upgrade",
+                                           sizeof("upgrade") - 1);
+}
+
+
+static ngx_uint_t
+ngx_http_lua_fetch_request_header_name_valid(ngx_str_t *name)
+{
+    size_t  i;
+    u_char  ch;
+
+    if (name->len == 0) {
+        return 0;
+    }
+
+    for (i = 0; i < name->len; i++) {
+        ch = name->data[i];
+
+        if ((ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9')) {
+            continue;
+        }
+
+        switch (ch) {
+        case '!':
+        case '#':
+        case '$':
+        case '%':
+        case '&':
+        case '\'':
+        case '*':
+        case '+':
+        case '-':
+        case '.':
+        case '^':
+        case '_':
+        case '`':
+        case '|':
+        case '~':
+            continue;
+        default:
+            return 0;
+        }
+    }
+
+    return 1;
+}
+
+
+static ngx_uint_t
+ngx_http_lua_fetch_request_header_value_valid(ngx_str_t *value)
+{
+    size_t  i;
+    u_char  ch;
+
+    for (i = 0; i < value->len; i++) {
+        ch = value->data[i];
+
+        if (ch == '\t') {
+            continue;
+        }
+
+        if (ch < 0x20 || ch == 0x7f) {
+            return 0;
+        }
+    }
+
+    return 1;
 }
 
 

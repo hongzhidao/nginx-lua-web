@@ -94,7 +94,25 @@ while True:
 PY
 )}
 
-DNS_PORT=${DNS_PORT:-$(python3 - "$PORT" "$UPSTREAM_PORT" "$HTTPS_UPSTREAM_PORT" "$SLOW_FETCH_PORT" <<'PY'
+HEADER_FETCH_PORT=${HEADER_FETCH_PORT:-$(python3 - "$PORT" "$UPSTREAM_PORT" "$HTTPS_UPSTREAM_PORT" "$SLOW_FETCH_PORT" <<'PY'
+import socket
+import sys
+
+used = {int(arg) for arg in sys.argv[1:]}
+
+while True:
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    port = s.getsockname()[1]
+    s.close()
+
+    if port not in used:
+        print(port)
+        break
+PY
+)}
+
+DNS_PORT=${DNS_PORT:-$(python3 - "$PORT" "$UPSTREAM_PORT" "$HTTPS_UPSTREAM_PORT" "$SLOW_FETCH_PORT" "$HEADER_FETCH_PORT" <<'PY'
 import socket
 import sys
 
@@ -764,6 +782,7 @@ end
 local app = App.new()
 local fetch_target = "http://fetch.test:__UPSTREAM_PORT__"
 local https_fetch_url = "https://fetch.test:__HTTPS_UPSTREAM_PORT__/fetch-upstream"
+local header_fetch_url = "http://127.0.0.1:__HEADER_FETCH_PORT__/headers"
 local missing_target = "http://missing.test:__UPSTREAM_PORT__"
 
 local function upstream_url(request)
@@ -791,6 +810,39 @@ local function read_body(response)
 end
 
 app:all("*", function(request)
+    if request.url:match("/lua%-fetch%-headers$") then
+        local response, err = fetch(header_fetch_url, {
+            headers = {
+                ["X-Test"] = "one",
+                ["Host"] = "bad.example",
+                ["Connection"] = "close",
+                ["Transfer-Encoding"] = "identity",
+                ["Content-Length"] = "999",
+            },
+        })
+
+        if response == nil or response.status ~= 200 then
+            return Response.new({
+                status = 500,
+                body = text_stream(err or "fetch header status mismatch"),
+            })
+        end
+
+        local body = read_body(response)
+
+        if body ~= "fetch header response" then
+            return Response.new({
+                status = 500,
+                body = text_stream(body),
+            })
+        end
+
+        return Response.new({
+            status = 200,
+            body = text_stream("fetch sent request headers"),
+        })
+    end
+
     if request.url:match("/lua%-fetch%-https$") then
         local body = ReadableStream.new({
             start = function(controller)
@@ -922,6 +974,7 @@ EOF
 
 sed -i "s/__UPSTREAM_PORT__/$UPSTREAM_PORT/g" "$TEST_ROOT/app-fetch.lua"
 sed -i "s/__HTTPS_UPSTREAM_PORT__/$HTTPS_UPSTREAM_PORT/g" "$TEST_ROOT/app-fetch.lua"
+sed -i "s/__HEADER_FETCH_PORT__/$HEADER_FETCH_PORT/g" "$TEST_ROOT/app-fetch.lua"
 
 cat > "$TEST_ROOT/app-fetch-timeout.lua" <<'EOF'
 local function text_stream(text)
@@ -1398,6 +1451,10 @@ http {
             lua_web_file $TEST_ROOT/app-fetch.lua;
         }
 
+        location /lua-fetch-headers {
+            lua_web_file $TEST_ROOT/app-fetch.lua;
+        }
+
         location /lua-fetch-timeout {
             lua_web_file $TEST_ROOT/app-fetch-timeout.lua;
         }
@@ -1494,6 +1551,76 @@ while True:
 PY
 SLOW_FETCH_PID=$!
 
+HEADER_FETCH_PID=
+
+python3 - "$HEADER_FETCH_PORT" <<'PY' &
+import socket
+import sys
+
+port = int(sys.argv[1])
+server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+server.bind(("127.0.0.1", port))
+server.listen(16)
+
+while True:
+    conn, _ = server.accept()
+
+    with conn:
+        conn.settimeout(1)
+        data = b""
+
+        try:
+            while b"\r\n\r\n" not in data:
+                chunk = conn.recv(4096)
+                if not chunk:
+                    break
+
+                data += chunk
+
+        except OSError:
+            pass
+
+        lines = data.split(b"\r\n\r\n", 1)[0].split(b"\r\n")
+        headers = {}
+
+        for line in lines[1:]:
+            name, sep, value = line.partition(b":")
+            if sep != b":":
+                continue
+
+            headers.setdefault(name.strip().lower(), []).append(value.strip())
+
+        body = b"fetch header response"
+
+        if headers.get(b"x-test") != [b"one"]:
+            body = b"fetch request header missing"
+
+        elif any(value == b"bad.example" for value in headers.get(b"host", [])):
+            body = b"fetch forwarded controlled Host header"
+
+        elif headers.get(b"connection") != [b"keep-alive"]:
+            body = b"fetch forwarded controlled Connection header"
+
+        elif b"content-length" in headers:
+            body = b"fetch forwarded controlled Content-Length header"
+
+        elif b"transfer-encoding" in headers:
+            body = b"fetch forwarded controlled Transfer-Encoding header"
+
+        try:
+            conn.sendall(
+                b"HTTP/1.1 200 OK\r\n"
+                b"Content-Length: " + str(len(body)).encode() + b"\r\n"
+                b"Connection: close\r\n"
+                b"\r\n" + body
+            )
+
+        except OSError:
+            pass
+PY
+HEADER_FETCH_PID=$!
+
 DNS_PID=
 
 python3 - "$DNS_PORT" <<'PY' &
@@ -1553,6 +1680,9 @@ cleanup() {
     "$NGINX" -p "$TEST_ROOT/" -c conf/nginx.conf -s stop >/dev/null 2>&1 || true
     if [ -n "$SLOW_FETCH_PID" ]; then
         kill "$SLOW_FETCH_PID" >/dev/null 2>&1 || true
+    fi
+    if [ -n "$HEADER_FETCH_PID" ]; then
+        kill "$HEADER_FETCH_PID" >/dev/null 2>&1 || true
     fi
     if [ -n "$DNS_PID" ]; then
         kill "$DNS_PID" >/dev/null 2>&1 || true
