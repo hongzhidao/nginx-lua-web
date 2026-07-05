@@ -25,6 +25,7 @@ struct ngx_lua_web_headers_s {
 
 
 static int ngx_lua_web_headers_new(lua_State *L);
+static int ngx_lua_web_headers_get_method(lua_State *L);
 static int ngx_lua_web_headers_gc(lua_State *L);
 static void ngx_lua_web_headers_copy_from_headers(lua_State *L,
     ngx_lua_web_headers_t *headers, ngx_lua_web_headers_t *source, int arg);
@@ -53,6 +54,7 @@ static const luaL_Reg  ngx_lua_web_headers_global_methods[] = {
 
 
 static const luaL_Reg  ngx_lua_web_headers_methods[] = {
+    { "get", ngx_lua_web_headers_get_method },
     { NULL, NULL }
 };
 
@@ -148,6 +150,41 @@ ngx_lua_web_headers_new(lua_State *L)
         ngx_lua_web_headers_init(L, headers, 1, 1);
     }
 
+    return 1;
+}
+
+
+static int
+ngx_lua_web_headers_get_method(lua_State *L)
+{
+    size_t                 i, name_len;
+    const char            *name;
+    ngx_lua_web_header_t  *header;
+    ngx_lua_web_headers_t *headers;
+
+    if (lua_gettop(L) != 2) {
+        return luaL_error(L, "Headers:get() takes name");
+    }
+
+    headers = luaL_checkudata(L, 1, NGX_LUA_WEB_HEADERS_METATABLE);
+
+    if (lua_type(L, 2) != LUA_TSTRING) {
+        return luaL_argerror(L, 2, "header name must be a string");
+    }
+
+    name = lua_tolstring(L, 2, &name_len);
+
+    for (i = 0; i < headers->nelts; i++) {
+        header = &headers->elts[i];
+
+        if (ngx_lua_web_headers_name_eq(&header->name, name, name_len)) {
+            lua_pushlstring(L, (const char *) header->value.data,
+                            header->value.len);
+            return 1;
+        }
+    }
+
+    lua_pushnil(L);
     return 1;
 }
 

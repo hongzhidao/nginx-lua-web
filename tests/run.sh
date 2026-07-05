@@ -412,12 +412,25 @@ app:all("*", function()
         Headers.new()
         Headers.new(headers)
 
+        if headers:get("X-Test") ~= "one" then
+            error("Headers.get value mismatch")
+        end
+        if headers:get("x-test") ~= "one" then
+            error("Headers.get lowercase mismatch")
+        end
+        if headers:get("X-Other") ~= nil then
+            error("Headers.get missing value mismatch")
+        end
+
         local request = Request.new({ headers = headers })
         if request.headers == nil then
             error("request headers missing")
         end
         if request.headers == headers then
             error("request headers were not copied")
+        end
+        if request.headers:get("X-Test") ~= "one" then
+            error("request headers get mismatch")
         end
 
         local response = Response.new({ headers = headers })
@@ -426,6 +439,9 @@ app:all("*", function()
         end
         if response.headers == headers then
             error("response headers were not copied")
+        end
+        if response.headers:get("X-Test") ~= "one" then
+            error("response headers get mismatch")
         end
     end)
 
