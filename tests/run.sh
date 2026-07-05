@@ -681,11 +681,27 @@ app:all("*", function()
         })
     end
 
-    return Response.new({
+    local sent_response
+    local sent_body = ReadableStream.new({
+        pull = function(controller)
+            if not sent_response.bodyUsed then
+                controller:enqueue("response bodyUsed should be true during send")
+                controller:close()
+                return
+            end
+
+            controller:enqueue("Response.new")
+            controller:close()
+        end,
+    })
+
+    sent_response = Response.new({
         status = 200,
         headers = { ["X-Response-Test"] = "ok" },
-        body = text_stream("Response.new"),
+        body = sent_body,
     })
+
+    return sent_response
 end)
 
 return app
@@ -1037,6 +1053,33 @@ app:all("*", function()
             body = text_stream("ReadableStream exposes enqueue"),
         })
     end
+
+    local lock_stream = ReadableStream.new()
+    local reader = lock_stream:getReader()
+    local locked_ok = pcall(function()
+        lock_stream:getReader()
+    end)
+    if locked_ok then
+        return Response.new({
+            status = 500,
+            body = text_stream("ReadableStream allowed second reader"),
+        })
+    end
+
+    reader:releaseLock()
+
+    local released_reader_ok = pcall(function()
+        reader:read()
+    end)
+    if released_reader_ok then
+        return Response.new({
+            status = 500,
+            body = text_stream("released reader still read"),
+        })
+    end
+
+    local second_reader = lock_stream:getReader()
+    second_reader:releaseLock()
 
     return Response.new({
         status = 200,
@@ -1690,6 +1733,69 @@ end)
 return app
 EOF
 
+cat > "$TEST_ROOT/app-vm-write.lua" <<'EOF'
+local function text_stream(text)
+    return ReadableStream.new({
+        start = function(controller)
+            controller:enqueue(text)
+            controller:close()
+        end,
+    })
+end
+
+local app = App.new()
+
+app:all("*", function()
+    _G.__lua_web_main_conf_vm_marker = "shared main conf VM"
+
+    return Response.new({
+        status = 200,
+        body = text_stream("lua VM writer set"),
+    })
+end)
+
+return app
+EOF
+
+cat > "$TEST_ROOT/app-vm-read.lua" <<'EOF'
+local function text_stream(text)
+    return ReadableStream.new({
+        start = function(controller)
+            controller:enqueue(text)
+            controller:close()
+        end,
+    })
+end
+
+local app = App.new()
+
+app:all("*", function()
+    if _G.__lua_web_main_conf_vm_marker ~= "shared main conf VM" then
+        return Response.new({
+            status = 500,
+            body = text_stream("lua VM marker missing"),
+        })
+    end
+
+    return Response.new({
+        status = 200,
+        body = text_stream("lua VM shared"),
+    })
+end)
+
+return app
+EOF
+
+cat > "$TEST_ROOT/app-no-content.lua" <<'EOF'
+local app = App.new()
+
+app:all("*", function()
+    return Response.new({ status = 204 })
+end)
+
+return app
+EOF
+
 cat > "$TEST_ROOT/app-methods.lua" <<'EOF'
 local function text_stream(text)
     return ReadableStream.new({
@@ -2004,6 +2110,24 @@ http {
             lua_web_file $TEST_ROOT/app-alt.lua;
         }
 
+        location /lua-vm-write {
+            lua_web_file $TEST_ROOT/app-vm-write.lua;
+        }
+
+        location /lua-vm-read {
+            lua_web_file $TEST_ROOT/app-vm-read.lua;
+        }
+
+        location /lua-subrequest-mirror {
+            mirror /lua-subrequest-target;
+            mirror_request_body off;
+            lua_web_file $TEST_ROOT/app-no-content.lua;
+        }
+
+        location /lua-subrequest-target {
+            lua_web_file $TEST_ROOT/app.lua;
+        }
+
         location /lua-methods {
             lua_web_file $TEST_ROOT/app-methods.lua;
         }
@@ -2227,13 +2351,14 @@ fi
 "$NGINX" -p "$TEST_ROOT/" -c conf/nginx.conf
 
 for test_file in \
+    test_module.py \
+    test_app.py \
     test_requests.py \
     test_response.py \
     test_headers.py \
     test_url.py \
     test_stream.py \
-    test_fetch.py \
-    test_app.py
+    test_fetch.py
 do
     TEST_NGINX_PORT="$PORT" \
     TEST_NGINX_ROOT="$TEST_ROOT" \

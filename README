@@ -1,6 +1,0 @@
-nginx lua web
-=============
-
-This project is building a Lua web runtime for nginx, using web-style APIs
-such as `Request`, `Response`, `Headers`, `URL`, `URLSearchParams`, `Stream`,
-`fetch`, and `App` to write Lua web applications.
