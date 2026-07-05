@@ -58,10 +58,10 @@ app:all("*", function(request)
         })
     end
 
-    if request.url ~= "/lua-body" then
+    if not request.url:match("^http://127%.0%.0%.1:%d+/lua%-body$") then
         return Response.new({
             status = 500,
-            body = text_stream("request url mismatch"),
+            body = text_stream("request url mismatch: " .. request.url),
         })
     end
 
@@ -94,6 +94,28 @@ app:all("*", function(request)
     return Response.new({
         status = 200,
         body = text_stream(table.concat(chunks)),
+    })
+end)
+
+return app
+EOF
+
+cat > "$TEST_ROOT/app-request-url.lua" <<'EOF'
+local function text_stream(text)
+    return ReadableStream.new({
+        start = function(controller)
+            controller:enqueue(text)
+            controller:close()
+        end,
+    })
+end
+
+local app = App.new()
+
+app:all("*", function(request)
+    return Response.new({
+        status = 200,
+        body = text_stream(request.url),
     })
 end)
 
@@ -898,6 +920,10 @@ http {
 
         location /lua-body {
             lua_web_file $TEST_ROOT/app-body.lua;
+        }
+
+        location /lua-request-url {
+            lua_web_file $TEST_ROOT/app-request-url.lua;
         }
 
         location /lua-request-new {

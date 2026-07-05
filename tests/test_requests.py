@@ -1,4 +1,4 @@
-from lua_web_test import delayed_body_request, request, run_tests
+from lua_web_test import PORT, delayed_body_request, request, run_tests
 
 
 def test_request_body_readable_stream_reader_reads_body():
@@ -21,6 +21,20 @@ def test_request_body_reader_yields_until_body_arrives():
 
     if body != payload:
         raise AssertionError(f"expected delayed request body, got {body!r}")
+
+
+def test_request_url_is_absolute():
+    status, body = request(
+        "/lua-request-url?x=1",
+        headers={"Host": f"example.test:{PORT}"},
+    )
+
+    if status != 200:
+        raise AssertionError(f"expected 200, got {status}: {body!r}")
+
+    expected = f"http://example.test:{PORT}/lua-request-url?x=1"
+    if body != expected:
+        raise AssertionError(f"expected request url {expected!r}, got {body!r}")
 
 
 def test_request_new():
@@ -49,6 +63,8 @@ def main():
          test_request_body_readable_stream_reader_reads_body),
         ("request body reader yields until body arrives",
          test_request_body_reader_yields_until_body_arrives),
+        ("request url is absolute",
+         test_request_url_is_absolute),
         ("Request.new",
          test_request_new),
         ("request without body has nil body",
