@@ -60,6 +60,7 @@ struct ngx_http_lua_fetch_s {
     ngx_http_request_t         *r;
     ngx_lua_web_request_t      *request;
     ngx_lua_web_response_t     *response;
+    int                         request_ref;
 
     ngx_pool_t                 *pool;
     ngx_peer_connection_t       peer;
@@ -255,6 +256,9 @@ ngx_http_lua_fetch(lua_State *L)
     if (ngx_http_lua_fetch_parse_args(L, fetch) != NGX_OK) {
         return luaL_error(L, "fetch request state is invalid");
     }
+
+    lua_pushvalue(L, -1);
+    fetch->request_ref = luaL_ref(L, LUA_REGISTRYINDEX);
 
     lua_replace(L, 1);
     lua_settop(L, 1);
@@ -615,6 +619,7 @@ ngx_http_lua_fetch_create(lua_State *L)
     fetch->r = r;
     fetch->request = NULL;
     fetch->response = NULL;
+    fetch->request_ref = LUA_NOREF;
     fetch->response_body = NULL;
     fetch->pool = ctx->pool;
     fetch->resolver = NULL;
@@ -910,6 +915,7 @@ ngx_http_lua_fetch_resolve_handler(ngx_resolver_ctx_t *ctx)
 
     resume = ctx->async;
     fetch = ctx->data;
+    c = fetch->r->connection;
 
     if (ctx->state) {
         ngx_http_lua_fetch_fail(fetch, "fetch DNS resolve failed");
@@ -942,7 +948,6 @@ ngx_http_lua_fetch_resolve_handler(ngx_resolver_ctx_t *ctx)
 
 done:
 
-    c = fetch->r->connection;
     ngx_http_run_posted_requests(c);
 }
 
@@ -3038,4 +3043,10 @@ ngx_http_lua_fetch_cleanup(void *data)
     }
 
     ngx_http_lua_fetch_free_peer(fetch, 0);
+
+    if (fetch->request_ref != LUA_NOREF) {
+        luaL_unref(fetch->ctx->thread, LUA_REGISTRYINDEX,
+                   fetch->request_ref);
+        fetch->request_ref = LUA_NOREF;
+    }
 }
