@@ -33,8 +33,8 @@ ngx_lua_ctx_t *ngx_lua_get_ctx(lua_State *L);
 void ngx_lua_disable_coroutine(lua_State *L);
 void ngx_lua_app_register(lua_State *L);
 ngx_lua_app_t *ngx_lua_app_get(lua_State *L, int index);
-int ngx_lua_app_find_handler(ngx_lua_app_t *app, const char *method,
-    size_t method_len, const char *path, size_t len);
+int ngx_lua_app_find_handler(lua_State *L, ngx_lua_app_t *app,
+    const char *method, size_t method_len, const char *path, size_t len);
 
 
 #endif /* _NGX_LUA_H_INCLUDED_ */

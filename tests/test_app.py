@@ -61,6 +61,48 @@ def test_app_method_mismatch_returns_404():
         raise AssertionError(f"expected empty 404 body, got {body!r}")
 
 
+def test_app_rejects_invalid_route_param_pattern():
+    status, body = request("/lua-methods/invalid-param-pattern",
+                           method="GET")
+
+    if status != 200:
+        raise AssertionError(f"expected 200, got {status}")
+
+    if body != "invalid route parameter pattern rejected":
+        raise AssertionError(f"expected invalid pattern rejection, got {body!r}")
+
+
+def test_app_passes_empty_route_params():
+    status, body = request("/lua-methods/params-empty", method="GET")
+
+    if status != 200:
+        raise AssertionError(f"expected 200, got {status}")
+
+    if body != "params empty":
+        raise AssertionError(f"expected empty route params body, got {body!r}")
+
+
+def test_app_routes_with_params():
+    status, body = request("/lua-methods/users/alice/posts/42", method="GET")
+
+    if status != 200:
+        raise AssertionError(f"expected 200, got {status}")
+
+    if body != "alice:42":
+        raise AssertionError(f"expected route params body, got {body!r}")
+
+
+def test_app_route_params_do_not_match_extra_segments():
+    status, body = request("/lua-methods/users/alice/posts/42/extra",
+                           method="GET")
+
+    if status != 404:
+        raise AssertionError(f"expected 404, got {status}")
+
+    if body != "":
+        raise AssertionError(f"expected empty 404 body, got {body!r}")
+
+
 def test_app_prefix_routes_subpaths():
     status, body = request("/lua-methods/prefix/child", method="GET")
 
@@ -105,6 +147,14 @@ def main():
          test_app_post_routes_post_requests),
         ("method mismatch returns 404",
          test_app_method_mismatch_returns_404),
+        ("invalid route param pattern is rejected",
+         test_app_rejects_invalid_route_param_pattern),
+        ("routes pass empty params",
+         test_app_passes_empty_route_params),
+        ("routes capture params",
+         test_app_routes_with_params),
+        ("route params reject extra segments",
+         test_app_route_params_do_not_match_extra_segments),
         ("prefix routes subpaths",
          test_app_prefix_routes_subpaths),
         ("routes match in registration order",

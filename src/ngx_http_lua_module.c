@@ -315,6 +315,7 @@ ngx_http_lua_run_handler(ngx_http_request_t *r, ngx_http_lua_ctx_t *ctx,
     ngx_lua_app_t *app)
 {
     int                       handler_ref;
+    int                       params_ref;
     ngx_int_t                 rc;
     lua_State                *co;
     ngx_http_lua_loc_conf_t  *llcf;
@@ -322,7 +323,9 @@ ngx_http_lua_run_handler(ngx_http_request_t *r, ngx_http_lua_ctx_t *ctx,
     co = ctx->co;
     llcf = ngx_http_get_module_loc_conf(r, ngx_http_lua_module);
 
-    handler_ref = ngx_lua_app_find_handler(app,
+    params_ref = LUA_NOREF;
+
+    handler_ref = ngx_lua_app_find_handler(co, app,
                                            (char *) r->method_name.data,
                                            r->method_name.len,
                                            (char *) r->uri.data, r->uri.len);
@@ -339,6 +342,8 @@ ngx_http_lua_run_handler(ngx_http_request_t *r, ngx_http_lua_ctx_t *ctx,
         return ngx_http_send_special(r, NGX_HTTP_LAST);
     }
 
+    params_ref = luaL_ref(co, LUA_REGISTRYINDEX);
+
     lua_pushvalue(co, 1);
     ctx->app_ref = luaL_ref(co, LUA_REGISTRYINDEX);
 
@@ -349,20 +354,25 @@ ngx_http_lua_run_handler(ngx_http_request_t *r, ngx_http_lua_ctx_t *ctx,
         ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
                       "lua_web_file \"%V\" route handler is not a function",
                       &llcf->lua_web_file);
+        luaL_unref(co, LUA_REGISTRYINDEX, params_ref);
         return NGX_HTTP_INTERNAL_SERVER_ERROR;
     }
 
     ctx->request = ngx_http_lua_request_create(r, ctx);
     if (ctx->request == NULL) {
+        luaL_unref(co, LUA_REGISTRYINDEX, params_ref);
         return NGX_HTTP_INTERNAL_SERVER_ERROR;
     }
 
     lua_pushvalue(co, -1);
     ctx->request_ref = luaL_ref(co, LUA_REGISTRYINDEX);
 
+    lua_rawgeti(co, LUA_REGISTRYINDEX, params_ref);
+    luaL_unref(co, LUA_REGISTRYINDEX, params_ref);
+
     ngx_http_lua_set_request(co, r);
 
-    return ngx_http_lua_resume_request(r, 1);
+    return ngx_http_lua_resume_request(r, 2);
 }
 
 

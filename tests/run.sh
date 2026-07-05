@@ -1702,6 +1702,33 @@ end
 
 local app = App.new()
 
+local invalid_patterns = {
+    "/lua-methods/a:b",
+    "/lua-methods/:",
+    "/lua-methods/:1",
+    "/lua-methods/:id-name",
+    "/lua-methods/:id/:id",
+    "lua-methods/:id",
+    "lua-methods",
+}
+
+local invalid_param_errors = {}
+
+for _, pattern in ipairs(invalid_patterns) do
+    local ok = pcall(function()
+        app:get(pattern, function()
+            return Response.new({
+                status = 500,
+                body = text_stream("invalid pattern matched"),
+            })
+        end)
+    end)
+
+    if ok then
+        invalid_param_errors[#invalid_param_errors + 1] = pattern
+    end
+end
+
 app:get("/lua-methods", function(request)
     return Response.new({
         status = 200,
@@ -1720,6 +1747,64 @@ app:post("/lua-methods-post-only", function(request)
     return Response.new({
         status = 202,
         body = text_stream("POST only " .. request.method),
+    })
+end)
+
+app:get("/lua-methods/invalid-param-pattern", function()
+    if #invalid_param_errors ~= 0 then
+        return Response.new({
+            status = 500,
+            body = text_stream(
+                "invalid route parameter pattern accepted: "
+                .. table.concat(invalid_param_errors, ",")),
+        })
+    end
+
+    return Response.new({
+        status = 200,
+        body = text_stream("invalid route parameter pattern rejected"),
+    })
+end)
+
+app:get("/lua-methods/params-empty", function(_, params)
+    if type(params) ~= "table" then
+        return Response.new({
+            status = 500,
+            body = text_stream("params missing"),
+        })
+    end
+
+    if next(params) ~= nil then
+        return Response.new({
+            status = 500,
+            body = text_stream("params should be empty"),
+        })
+    end
+
+    return Response.new({
+        status = 200,
+        body = text_stream("params empty"),
+    })
+end)
+
+app:get("/lua-methods/users/:id/posts/:post_id", function(_, params)
+    if type(params) ~= "table" then
+        return Response.new({
+            status = 500,
+            body = text_stream("params missing"),
+        })
+    end
+
+    if params.id == nil or params.post_id == nil then
+        return Response.new({
+            status = 500,
+            body = text_stream("params values missing"),
+        })
+    end
+
+    return Response.new({
+        status = 200,
+        body = text_stream(params.id .. ":" .. params.post_id),
     })
 end)
 
