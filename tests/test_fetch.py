@@ -54,8 +54,18 @@ def test_fetch_dns_failure_returns_error():
 
 
 def test_fetch_opens_tcp_connection():
-    if count_error_log("fetch connected") < 4:
+    connected = count_error_log("fetch connected")
+
+    if connected < 2:
         raise AssertionError("expected fetch to open TCP connections")
+
+    if connected > 3:
+        raise AssertionError("expected fetch keepalive to limit TCP connects")
+
+
+def test_fetch_reuses_tcp_connection():
+    if count_error_log("fetch keepalive connection reused") < 2:
+        raise AssertionError("expected fetch to reuse TCP connections")
 
 
 def test_fetch_reads_response_header():
@@ -82,6 +92,8 @@ def main():
          test_fetch_dns_failure_returns_error),
         ("fetch opens TCP connection",
          test_fetch_opens_tcp_connection),
+        ("fetch reuses TCP connection",
+         test_fetch_reuses_tcp_connection),
         ("fetch reads response header",
          test_fetch_reads_response_header),
         ("fetch sends request body",

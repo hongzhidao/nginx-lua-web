@@ -17,9 +17,40 @@
 #define NGX_HTTP_LUA_FETCH_READ_TIMEOUT     5000
 #define NGX_HTTP_LUA_FETCH_RESPONSE_BUFFER  4096
 #define NGX_HTTP_LUA_FETCH_RESET_CONTENT    205
+#define NGX_HTTP_LUA_FETCH_KEEPALIVE_MAX    8
+#define NGX_HTTP_LUA_FETCH_KEEPALIVE_TIME   3600000
+#define NGX_HTTP_LUA_FETCH_KEEPALIVE_TIMEOUT  60000
+#define NGX_HTTP_LUA_FETCH_KEEPALIVE_REQUESTS  1000
 
 
 typedef struct ngx_http_lua_fetch_s  ngx_http_lua_fetch_t;
+typedef struct ngx_http_lua_fetch_keepalive_item_s
+    ngx_http_lua_fetch_keepalive_item_t;
+typedef struct ngx_http_lua_fetch_keepalive_pool_s
+    ngx_http_lua_fetch_keepalive_pool_t;
+
+
+struct ngx_http_lua_fetch_keepalive_item_s {
+    ngx_queue_t                 queue;
+    ngx_connection_t           *connection;
+    ngx_str_t                   scheme;
+    ngx_str_t                   host;
+    size_t                      scheme_cap;
+    size_t                      host_cap;
+    in_port_t                   port;
+    ngx_uint_t                  ssl;
+};
+
+
+struct ngx_http_lua_fetch_keepalive_pool_s {
+    ngx_queue_t                 cache;
+    ngx_queue_t                 free;
+    ngx_uint_t                  initialized;
+    ngx_cycle_t                *cycle;
+
+    ngx_http_lua_fetch_keepalive_item_t
+                                 items[NGX_HTTP_LUA_FETCH_KEEPALIVE_MAX];
+};
 
 
 struct ngx_http_lua_fetch_s {
@@ -140,6 +171,29 @@ static void ngx_http_lua_fetch_fail(ngx_http_lua_fetch_t *fetch,
 static void ngx_http_lua_fetch_free_peer(ngx_http_lua_fetch_t *fetch,
     ngx_uint_t keepalive);
 static void ngx_http_lua_fetch_cleanup(void *data);
+
+static ngx_int_t ngx_http_lua_fetch_keepalive_init(ngx_log_t *log);
+static ngx_int_t ngx_http_lua_fetch_get_keepalive(
+    ngx_http_lua_fetch_t *fetch);
+static ngx_int_t ngx_http_lua_fetch_save_keepalive(
+    ngx_http_lua_fetch_t *fetch, ngx_connection_t *c);
+static ngx_int_t ngx_http_lua_fetch_keepalive_copy_key(
+    ngx_http_lua_fetch_keepalive_item_t *item,
+    ngx_http_lua_fetch_t *fetch);
+static ngx_int_t ngx_http_lua_fetch_keepalive_copy_str(ngx_str_t *dst,
+    size_t *cap, ngx_str_t *src);
+static ngx_uint_t ngx_http_lua_fetch_keepalive_match(
+    ngx_http_lua_fetch_keepalive_item_t *item,
+    ngx_http_lua_fetch_t *fetch);
+static ngx_uint_t ngx_http_lua_fetch_keepalive_stale(ngx_connection_t *c);
+static void ngx_http_lua_fetch_keepalive_dummy_handler(ngx_event_t *ev);
+static void ngx_http_lua_fetch_keepalive_close_handler(ngx_event_t *ev);
+static void ngx_http_lua_fetch_keepalive_close(ngx_connection_t *c);
+static void ngx_http_lua_fetch_keepalive_cleanup(void *data);
+
+
+static ngx_http_lua_fetch_keepalive_pool_t
+    ngx_http_lua_fetch_keepalive_pool;
 
 
 void
@@ -840,6 +894,16 @@ ngx_http_lua_fetch_connect(ngx_http_lua_fetch_t *fetch)
     ngx_int_t          rc;
     ngx_connection_t  *c;
 
+    if (ngx_http_lua_fetch_get_keepalive(fetch) == NGX_OK) {
+        c = fetch->peer.connection;
+
+        c->data = fetch;
+        c->write->handler = ngx_http_lua_fetch_send_request_handler;
+        c->read->handler = ngx_http_lua_fetch_process_header_handler;
+
+        return ngx_http_lua_fetch_send_request(fetch);
+    }
+
     rc = ngx_event_connect_peer(&fetch->peer);
 
     if (rc == NGX_ERROR || rc == NGX_DECLINED || rc == NGX_BUSY) {
@@ -848,6 +912,14 @@ ngx_http_lua_fetch_connect(ngx_http_lua_fetch_t *fetch)
     }
 
     c = fetch->peer.connection;
+
+    if (c->pool == NULL) {
+        c->pool = ngx_create_pool(128, fetch->r->connection->log);
+        if (c->pool == NULL) {
+            ngx_http_lua_fetch_fail(fetch, "no memory");
+            return NGX_ERROR;
+        }
+    }
 
     c->data = fetch;
     c->write->handler = ngx_http_lua_fetch_send_request_handler;
@@ -943,15 +1015,24 @@ ngx_http_lua_fetch_send_request(ngx_http_lua_fetch_t *fetch)
     c = fetch->peer.connection;
 
     if (!fetch->request_sent) {
-        if (ngx_http_lua_fetch_test_connect(c) != NGX_OK) {
+        if (!fetch->peer.cached
+            && ngx_http_lua_fetch_test_connect(c) != NGX_OK)
+        {
             ngx_http_lua_fetch_fail(fetch, "fetch connect failed");
             return NGX_ERROR;
         }
 
         fetch->request_sent = 1;
+        c->requests++;
 
-        ngx_log_error(NGX_LOG_NOTICE, fetch->r->connection->log, 0,
-                      "fetch connected");
+        if (fetch->peer.cached) {
+            ngx_log_error(NGX_LOG_NOTICE, fetch->r->connection->log, 0,
+                          "fetch keepalive connection reused");
+
+        } else {
+            ngx_log_error(NGX_LOG_NOTICE, fetch->r->connection->log, 0,
+                          "fetch connected");
+        }
     }
 
     for ( ;; ) {
@@ -1895,9 +1976,437 @@ ngx_http_lua_fetch_free_peer(ngx_http_lua_fetch_t *fetch, ngx_uint_t keepalive)
 
     fetch->peer.connection = NULL;
 
-    (void) keepalive;
+    if (keepalive
+        && ngx_http_lua_fetch_save_keepalive(fetch, c) == NGX_OK)
+    {
+        return;
+    }
+
+    if (c->pool != NULL) {
+        ngx_destroy_pool(c->pool);
+    }
 
     ngx_close_connection(c);
+}
+
+
+static ngx_int_t
+ngx_http_lua_fetch_keepalive_init(ngx_log_t *log)
+{
+    ngx_uint_t                            i;
+    ngx_pool_cleanup_t                   *cln;
+    ngx_http_lua_fetch_keepalive_pool_t  *pool;
+
+    pool = &ngx_http_lua_fetch_keepalive_pool;
+
+    if (pool->initialized && pool->cycle == (ngx_cycle_t *) ngx_cycle) {
+        return NGX_OK;
+    }
+
+    if (pool->initialized) {
+        ngx_http_lua_fetch_keepalive_cleanup(pool);
+    }
+
+    ngx_memzero(pool->items, sizeof(pool->items));
+    ngx_queue_init(&pool->cache);
+    ngx_queue_init(&pool->free);
+
+    for (i = 0; i < NGX_HTTP_LUA_FETCH_KEEPALIVE_MAX; i++) {
+        ngx_queue_insert_head(&pool->free, &pool->items[i].queue);
+    }
+
+    cln = ngx_pool_cleanup_add(ngx_cycle->pool, 0);
+    if (cln == NULL) {
+        ngx_log_error(NGX_LOG_ERR, log, 0,
+                      "fetch keepalive pool cleanup add failed");
+        return NGX_ERROR;
+    }
+
+    cln->handler = ngx_http_lua_fetch_keepalive_cleanup;
+    cln->data = pool;
+
+    pool->cycle = (ngx_cycle_t *) ngx_cycle;
+    pool->initialized = 1;
+
+    return NGX_OK;
+}
+
+
+static ngx_int_t
+ngx_http_lua_fetch_get_keepalive(ngx_http_lua_fetch_t *fetch)
+{
+    ngx_queue_t                           *q, *next;
+    ngx_connection_t                      *c;
+    ngx_http_lua_fetch_keepalive_item_t  *item;
+    ngx_http_lua_fetch_keepalive_pool_t  *pool;
+
+    if (ngx_http_lua_fetch_keepalive_init(fetch->r->connection->log)
+        != NGX_OK)
+    {
+        return NGX_DECLINED;
+    }
+
+    pool = &ngx_http_lua_fetch_keepalive_pool;
+
+    for (q = ngx_queue_head(&pool->cache);
+         q != ngx_queue_sentinel(&pool->cache);
+         q = next)
+    {
+        next = ngx_queue_next(q);
+        item = ngx_queue_data(q, ngx_http_lua_fetch_keepalive_item_t, queue);
+
+        if (!ngx_http_lua_fetch_keepalive_match(item, fetch)) {
+            continue;
+        }
+
+        ngx_queue_remove(q);
+        ngx_queue_insert_head(&pool->free, q);
+
+        c = item->connection;
+        item->connection = NULL;
+
+        if (ngx_http_lua_fetch_keepalive_stale(c)) {
+            ngx_http_lua_fetch_keepalive_close(c);
+            continue;
+        }
+
+        c->idle = 0;
+        c->sent = 0;
+        c->data = NULL;
+        c->log = fetch->r->connection->log;
+        c->read->log = c->log;
+        c->write->log = c->log;
+
+        if (c->pool != NULL) {
+            c->pool->log = c->log;
+        }
+
+        if (c->read->timer_set) {
+            ngx_del_timer(c->read);
+        }
+
+        if (c->reusable) {
+            ngx_reusable_connection(c, 0);
+        }
+
+        fetch->peer.connection = c;
+        fetch->peer.cached = 1;
+
+        return NGX_OK;
+    }
+
+    return NGX_DECLINED;
+}
+
+
+static ngx_int_t
+ngx_http_lua_fetch_save_keepalive(ngx_http_lua_fetch_t *fetch,
+    ngx_connection_t *c)
+{
+    ngx_queue_t                           *q;
+    ngx_http_lua_fetch_keepalive_item_t  *item;
+    ngx_http_lua_fetch_keepalive_pool_t  *pool;
+
+    if (c->read->eof
+        || c->read->error
+        || c->read->timedout
+        || c->write->error
+        || c->write->timedout
+        || ngx_terminate
+        || ngx_exiting)
+    {
+        return NGX_ERROR;
+    }
+
+    if (fetch->read_buf->pos != fetch->read_buf->last) {
+        return NGX_ERROR;
+    }
+
+    if (c->requests >= NGX_HTTP_LUA_FETCH_KEEPALIVE_REQUESTS) {
+        return NGX_ERROR;
+    }
+
+    if (ngx_current_msec - c->start_time > NGX_HTTP_LUA_FETCH_KEEPALIVE_TIME) {
+        return NGX_ERROR;
+    }
+
+    if (ngx_handle_read_event(c->read, 0) != NGX_OK) {
+        return NGX_ERROR;
+    }
+
+    if (ngx_http_lua_fetch_keepalive_init(fetch->r->connection->log)
+        != NGX_OK)
+    {
+        return NGX_ERROR;
+    }
+
+    pool = &ngx_http_lua_fetch_keepalive_pool;
+
+    if (ngx_queue_empty(&pool->free)) {
+        q = ngx_queue_last(&pool->cache);
+        ngx_queue_remove(q);
+
+        item = ngx_queue_data(q, ngx_http_lua_fetch_keepalive_item_t, queue);
+
+        if (item->connection != NULL) {
+            ngx_http_lua_fetch_keepalive_close(item->connection);
+            item->connection = NULL;
+        }
+
+    } else {
+        q = ngx_queue_head(&pool->free);
+        ngx_queue_remove(q);
+
+        item = ngx_queue_data(q, ngx_http_lua_fetch_keepalive_item_t, queue);
+    }
+
+    if (ngx_http_lua_fetch_keepalive_copy_key(item, fetch) != NGX_OK) {
+        ngx_queue_insert_head(&pool->free, q);
+        return NGX_ERROR;
+    }
+
+    ngx_queue_insert_head(&pool->cache, q);
+
+    item->connection = c;
+
+    c->read->delayed = 0;
+    ngx_add_timer(c->read, NGX_HTTP_LUA_FETCH_KEEPALIVE_TIMEOUT);
+
+    if (c->write->timer_set) {
+        ngx_del_timer(c->write);
+    }
+
+    c->write->handler = ngx_http_lua_fetch_keepalive_dummy_handler;
+    c->read->handler = ngx_http_lua_fetch_keepalive_close_handler;
+
+    c->data = item;
+    c->idle = 1;
+    c->log = ngx_cycle->log;
+    c->read->log = ngx_cycle->log;
+    c->write->log = ngx_cycle->log;
+
+    if (c->pool != NULL) {
+        c->pool->log = ngx_cycle->log;
+    }
+
+    ngx_reusable_connection(c, 1);
+
+    ngx_log_error(NGX_LOG_NOTICE, fetch->r->connection->log, 0,
+                  "fetch keepalive connection cached");
+
+    if (c->read->ready) {
+        ngx_http_lua_fetch_keepalive_close_handler(c->read);
+    }
+
+    return NGX_OK;
+}
+
+
+static ngx_int_t
+ngx_http_lua_fetch_keepalive_copy_key(
+    ngx_http_lua_fetch_keepalive_item_t *item,
+    ngx_http_lua_fetch_t *fetch)
+{
+    if (ngx_http_lua_fetch_keepalive_copy_str(&item->scheme,
+                                              &item->scheme_cap,
+                                              &fetch->scheme)
+        != NGX_OK)
+    {
+        return NGX_ERROR;
+    }
+
+    if (ngx_http_lua_fetch_keepalive_copy_str(&item->host, &item->host_cap,
+                                              &fetch->host)
+        != NGX_OK)
+    {
+        return NGX_ERROR;
+    }
+
+    item->port = fetch->port;
+    item->ssl = fetch->ssl;
+
+    return NGX_OK;
+}
+
+
+static ngx_int_t
+ngx_http_lua_fetch_keepalive_copy_str(ngx_str_t *dst, size_t *cap,
+    ngx_str_t *src)
+{
+    u_char  *p;
+
+    if (*cap < src->len) {
+        p = ngx_pnalloc(ngx_cycle->pool, src->len);
+        if (p == NULL) {
+            return NGX_ERROR;
+        }
+
+        dst->data = p;
+        *cap = src->len;
+    }
+
+    ngx_memcpy(dst->data, src->data, src->len);
+    dst->len = src->len;
+
+    return NGX_OK;
+}
+
+
+static ngx_uint_t
+ngx_http_lua_fetch_keepalive_match(
+    ngx_http_lua_fetch_keepalive_item_t *item,
+    ngx_http_lua_fetch_t *fetch)
+{
+    if (item->connection == NULL
+        || item->ssl != fetch->ssl
+        || item->port != fetch->port
+        || item->scheme.len != fetch->scheme.len
+        || item->host.len != fetch->host.len)
+    {
+        return 0;
+    }
+
+    if (ngx_strncasecmp(item->scheme.data, fetch->scheme.data,
+                        fetch->scheme.len)
+        != 0)
+    {
+        return 0;
+    }
+
+    return ngx_strncasecmp(item->host.data, fetch->host.data,
+                           fetch->host.len)
+           == 0;
+}
+
+
+static ngx_uint_t
+ngx_http_lua_fetch_keepalive_stale(ngx_connection_t *c)
+{
+    ssize_t  n;
+    char     buf[1];
+
+    if (c == NULL
+        || c->close
+        || c->read->eof
+        || c->read->error
+        || c->read->timedout
+        || c->write->error
+        || c->write->timedout)
+    {
+        return 1;
+    }
+
+    n = recv(c->fd, buf, 1, MSG_PEEK);
+
+    if (n == -1 && ngx_socket_errno == NGX_EAGAIN) {
+        return 0;
+    }
+
+    return 1;
+}
+
+
+static void
+ngx_http_lua_fetch_keepalive_dummy_handler(ngx_event_t *ev)
+{
+    ngx_log_debug0(NGX_LOG_DEBUG_HTTP, ev->log, 0,
+                   "fetch keepalive dummy handler");
+}
+
+
+static void
+ngx_http_lua_fetch_keepalive_close_handler(ngx_event_t *ev)
+{
+    ssize_t                                n;
+    char                                   buf[1];
+    ngx_connection_t                      *c;
+    ngx_http_lua_fetch_keepalive_item_t   *item;
+    ngx_http_lua_fetch_keepalive_pool_t   *pool;
+
+    c = ev->data;
+
+    if (c->close || c->read->timedout) {
+        goto close;
+    }
+
+    n = recv(c->fd, buf, 1, MSG_PEEK);
+
+    if (n == -1 && ngx_socket_errno == NGX_EAGAIN) {
+        ev->ready = 0;
+
+        if (ngx_handle_read_event(c->read, 0) != NGX_OK) {
+            goto close;
+        }
+
+        return;
+    }
+
+close:
+
+    item = c->data;
+    pool = &ngx_http_lua_fetch_keepalive_pool;
+
+    if (item != NULL) {
+        item->connection = NULL;
+        ngx_queue_remove(&item->queue);
+        ngx_queue_insert_head(&pool->free, &item->queue);
+    }
+
+    ngx_http_lua_fetch_keepalive_close(c);
+}
+
+
+static void
+ngx_http_lua_fetch_keepalive_close(ngx_connection_t *c)
+{
+#if (NGX_HTTP_SSL)
+    if (c->ssl) {
+        c->ssl->no_wait_shutdown = 1;
+        c->ssl->no_send_shutdown = 1;
+
+        if (ngx_ssl_shutdown(c) == NGX_AGAIN) {
+            c->ssl->handler = ngx_http_lua_fetch_keepalive_close;
+            return;
+        }
+    }
+#endif
+
+    if (c->pool != NULL) {
+        ngx_destroy_pool(c->pool);
+    }
+
+    ngx_close_connection(c);
+}
+
+
+static void
+ngx_http_lua_fetch_keepalive_cleanup(void *data)
+{
+    ngx_queue_t                           *q;
+    ngx_http_lua_fetch_keepalive_item_t  *item;
+    ngx_http_lua_fetch_keepalive_pool_t  *pool = data;
+
+    if (!pool->initialized) {
+        return;
+    }
+
+    while (!ngx_queue_empty(&pool->cache)) {
+        q = ngx_queue_head(&pool->cache);
+        ngx_queue_remove(q);
+
+        item = ngx_queue_data(q, ngx_http_lua_fetch_keepalive_item_t, queue);
+
+        if (item->connection != NULL) {
+            ngx_http_lua_fetch_keepalive_close(item->connection);
+            item->connection = NULL;
+        }
+    }
+
+    ngx_queue_init(&pool->cache);
+    ngx_queue_init(&pool->free);
+
+    pool->initialized = 0;
+    pool->cycle = NULL;
 }
 
 
