@@ -73,6 +73,10 @@ struct ngx_http_lua_fetch_s {
     ngx_buf_t                  *write_buf;
     ngx_buf_t                  *read_buf;
     ngx_str_t                   error;
+    ngx_msec_t                  connect_timeout;
+    ngx_msec_t                  send_timeout;
+    ngx_msec_t                  read_timeout;
+    ngx_msec_t                  keepalive_timeout;
 
     ngx_lua_web_stream_t       *response_body;
     ngx_http_chunked_t          chunked;
@@ -103,6 +107,8 @@ static ngx_int_t ngx_http_lua_fetch_normalize_request(lua_State *L,
     ngx_http_lua_fetch_t *fetch, int nargs);
 static ngx_int_t ngx_http_lua_fetch_parse_options(lua_State *L,
     ngx_http_lua_fetch_t *fetch, int index, int arg);
+static ngx_int_t ngx_http_lua_fetch_parse_timeout_option(lua_State *L,
+    ngx_msec_t *timeout, int arg);
 static ngx_http_lua_fetch_t *ngx_http_lua_fetch_create(lua_State *L);
 static ngx_int_t ngx_http_lua_fetch_parse_uri(ngx_http_lua_fetch_t *fetch,
     ngx_str_t *url);
@@ -436,41 +442,117 @@ ngx_http_lua_fetch_parse_options(lua_State *L, ngx_http_lua_fetch_t *fetch,
         }
 
         key = lua_tolstring(L, -2, &len);
-        if (len != sizeof("target") - 1
-            || ngx_strncmp(key, "target", sizeof("target") - 1) != 0)
+
+        if (len == sizeof("target") - 1
+            && ngx_strncmp(key, "target", sizeof("target") - 1) == 0)
         {
+            if (lua_type(L, -1) != LUA_TSTRING) {
+                lua_pop(L, 2);
+                luaL_argerror(L, arg, "target must be a string");
+                return NGX_ERROR;
+            }
+
+            value = lua_tolstring(L, -1, &len);
+            fetch->target.len = len;
+
+            if (len == 0) {
+                fetch->target.data = (u_char *) "";
+
+            } else {
+                fetch->target.data = ngx_pnalloc(fetch->pool, len);
+                if (fetch->target.data == NULL) {
+                    lua_pop(L, 2);
+                    luaL_error(L, "no memory");
+                    return NGX_ERROR;
+                }
+
+                ngx_memcpy(fetch->target.data, value, len);
+            }
+
+            fetch->has_target = 1;
+
+        } else if (len == sizeof("connect_timeout") - 1
+                   && ngx_strncmp(key, "connect_timeout",
+                                  sizeof("connect_timeout") - 1)
+                      == 0)
+        {
+            if (ngx_http_lua_fetch_parse_timeout_option(
+                    L, &fetch->connect_timeout, arg)
+                != NGX_OK)
+            {
+                return NGX_ERROR;
+            }
+
+        } else if (len == sizeof("send_timeout") - 1
+                   && ngx_strncmp(key, "send_timeout",
+                                  sizeof("send_timeout") - 1)
+                      == 0)
+        {
+            if (ngx_http_lua_fetch_parse_timeout_option(
+                    L, &fetch->send_timeout, arg)
+                != NGX_OK)
+            {
+                return NGX_ERROR;
+            }
+
+        } else if (len == sizeof("read_timeout") - 1
+                   && ngx_strncmp(key, "read_timeout",
+                                  sizeof("read_timeout") - 1)
+                      == 0)
+        {
+            if (ngx_http_lua_fetch_parse_timeout_option(
+                    L, &fetch->read_timeout, arg)
+                != NGX_OK)
+            {
+                return NGX_ERROR;
+            }
+
+        } else if (len == sizeof("keepalive_timeout") - 1
+                   && ngx_strncmp(key, "keepalive_timeout",
+                                  sizeof("keepalive_timeout") - 1)
+                      == 0)
+        {
+            if (ngx_http_lua_fetch_parse_timeout_option(
+                    L, &fetch->keepalive_timeout, arg)
+                != NGX_OK)
+            {
+                return NGX_ERROR;
+            }
+
+        } else {
             lua_pop(L, 2);
             luaL_argerror(L, arg, "unsupported fetch option");
             return NGX_ERROR;
         }
 
-        if (lua_type(L, -1) != LUA_TSTRING) {
-            lua_pop(L, 2);
-            luaL_argerror(L, arg, "target must be a string");
-            return NGX_ERROR;
-        }
-
-        value = lua_tolstring(L, -1, &len);
-        fetch->target.len = len;
-
-        if (len == 0) {
-            fetch->target.data = (u_char *) "";
-
-        } else {
-            fetch->target.data = ngx_pnalloc(fetch->pool, len);
-            if (fetch->target.data == NULL) {
-                lua_pop(L, 2);
-                luaL_error(L, "no memory");
-                return NGX_ERROR;
-            }
-
-            ngx_memcpy(fetch->target.data, value, len);
-        }
-
-        fetch->has_target = 1;
-
         lua_pop(L, 1);
     }
+
+    return NGX_OK;
+}
+
+
+static ngx_int_t
+ngx_http_lua_fetch_parse_timeout_option(lua_State *L, ngx_msec_t *timeout,
+    int arg)
+{
+    lua_Integer  value;
+
+    if (!lua_isinteger(L, -1)) {
+        luaL_argerror(L, arg,
+                      "timeout options must be non-negative integers");
+        return NGX_ERROR;
+    }
+
+    value = lua_tointeger(L, -1);
+
+    if (value < 0) {
+        luaL_argerror(L, arg,
+                      "timeout options must be non-negative integers");
+        return NGX_ERROR;
+    }
+
+    *timeout = (ngx_msec_t) value;
 
     return NGX_OK;
 }
@@ -511,6 +593,10 @@ ngx_http_lua_fetch_create(lua_State *L)
     fetch->resolver = NULL;
     fetch->content_length_n = -1;
     fetch->body_read = 0;
+    fetch->connect_timeout = NGX_HTTP_LUA_FETCH_CONNECT_TIMEOUT;
+    fetch->send_timeout = NGX_HTTP_LUA_FETCH_SEND_TIMEOUT;
+    fetch->read_timeout = NGX_HTTP_LUA_FETCH_READ_TIMEOUT;
+    fetch->keepalive_timeout = NGX_HTTP_LUA_FETCH_KEEPALIVE_TIMEOUT;
     fetch->request_sent = 0;
     fetch->request_body_sent = 0;
     fetch->keepalive = 1;
@@ -949,7 +1035,7 @@ ngx_http_lua_fetch_connect(ngx_http_lua_fetch_t *fetch)
     c->read->handler = ngx_http_lua_fetch_process_header_handler;
 
     if (rc == NGX_AGAIN) {
-        ngx_add_timer(c->write, NGX_HTTP_LUA_FETCH_CONNECT_TIMEOUT);
+        ngx_add_timer(c->write, fetch->connect_timeout);
         return NGX_AGAIN;
     }
 
@@ -1076,7 +1162,7 @@ ngx_http_lua_fetch_ssl_start(ngx_http_lua_fetch_t *fetch)
 
     if (rc == NGX_AGAIN) {
         if (!c->write->timer_set) {
-            ngx_add_timer(c->write, NGX_HTTP_LUA_FETCH_CONNECT_TIMEOUT);
+            ngx_add_timer(c->write, fetch->connect_timeout);
         }
 
         c->ssl->handler = ngx_http_lua_fetch_ssl_handshake_handler;
@@ -1289,7 +1375,7 @@ ngx_http_lua_fetch_send_request(ngx_http_lua_fetch_t *fetch)
         return NGX_ERROR;
     }
 
-    ngx_add_timer(c->read, NGX_HTTP_LUA_FETCH_READ_TIMEOUT);
+    ngx_add_timer(c->read, fetch->read_timeout);
 
     if (c->read->ready) {
         return ngx_http_lua_fetch_process_header(fetch);
@@ -1328,7 +1414,7 @@ ngx_http_lua_fetch_send_buffer(ngx_http_lua_fetch_t *fetch)
         }
 
         if (n == NGX_AGAIN) {
-            ngx_add_timer(c->write, NGX_HTTP_LUA_FETCH_SEND_TIMEOUT);
+            ngx_add_timer(c->write, fetch->send_timeout);
 
             if (ngx_handle_write_event(c->write, 0) != NGX_OK) {
                 ngx_http_lua_fetch_fail(fetch, "fetch request send failed");
@@ -1908,7 +1994,7 @@ ngx_http_lua_fetch_read_body(ngx_http_lua_fetch_t *fetch,
 
     c = fetch->peer.connection;
     c->read->handler = ngx_http_lua_fetch_process_body_handler;
-    ngx_add_timer(c->read, NGX_HTTP_LUA_FETCH_READ_TIMEOUT);
+    ngx_add_timer(c->read, fetch->read_timeout);
 
     if (ngx_handle_read_event(c->read, 0) != NGX_OK) {
         return NGX_ERROR;
@@ -2407,7 +2493,7 @@ ngx_http_lua_fetch_save_keepalive(ngx_http_lua_fetch_t *fetch,
     item->connection = c;
 
     c->read->delayed = 0;
-    ngx_add_timer(c->read, NGX_HTTP_LUA_FETCH_KEEPALIVE_TIMEOUT);
+    ngx_add_timer(c->read, fetch->keepalive_timeout);
 
     if (c->write->timer_set) {
         ngx_del_timer(c->write);

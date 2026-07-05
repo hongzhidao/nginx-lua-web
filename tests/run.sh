@@ -76,7 +76,25 @@ while True:
 PY
 )}
 
-DNS_PORT=${DNS_PORT:-$(python3 - "$PORT" "$UPSTREAM_PORT" "$HTTPS_UPSTREAM_PORT" <<'PY'
+SLOW_FETCH_PORT=${SLOW_FETCH_PORT:-$(python3 - "$PORT" "$UPSTREAM_PORT" "$HTTPS_UPSTREAM_PORT" <<'PY'
+import socket
+import sys
+
+used = {int(arg) for arg in sys.argv[1:]}
+
+while True:
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    port = s.getsockname()[1]
+    s.close()
+
+    if port not in used:
+        print(port)
+        break
+PY
+)}
+
+DNS_PORT=${DNS_PORT:-$(python3 - "$PORT" "$UPSTREAM_PORT" "$HTTPS_UPSTREAM_PORT" "$SLOW_FETCH_PORT" <<'PY'
 import socket
 import sys
 
@@ -882,6 +900,45 @@ EOF
 sed -i "s/__UPSTREAM_PORT__/$UPSTREAM_PORT/g" "$TEST_ROOT/app-fetch.lua"
 sed -i "s/__HTTPS_UPSTREAM_PORT__/$HTTPS_UPSTREAM_PORT/g" "$TEST_ROOT/app-fetch.lua"
 
+cat > "$TEST_ROOT/app-fetch-timeout.lua" <<'EOF'
+local function text_stream(text)
+    return ReadableStream.new({
+        start = function(controller)
+            controller:enqueue(text)
+            controller:close()
+        end,
+    })
+end
+
+local app = App.new()
+local slow_url = "http://127.0.0.1:__SLOW_FETCH_PORT__/slow"
+
+app:all("*", function()
+    local response, err = fetch(slow_url, nil, {
+        connect_timeout = 1000,
+        send_timeout = 1000,
+        read_timeout = 100,
+        keepalive_timeout = 1000,
+    })
+
+    if response ~= nil then
+        return Response.new({
+            status = 500,
+            body = text_stream("fetch timeout returned response"),
+        })
+    end
+
+    return Response.new({
+        status = 200,
+        body = text_stream(err or "fetch timeout error missing"),
+    })
+end)
+
+return app
+EOF
+
+sed -i "s/__SLOW_FETCH_PORT__/$SLOW_FETCH_PORT/g" "$TEST_ROOT/app-fetch-timeout.lua"
+
 cat > "$TEST_ROOT/app-fetch-body-after-yield.lua" <<'EOF'
 local function text_stream(text)
     return ReadableStream.new({
@@ -1300,6 +1357,10 @@ http {
             lua_web_file $TEST_ROOT/app-fetch.lua;
         }
 
+        location /lua-fetch-timeout {
+            lua_web_file $TEST_ROOT/app-fetch-timeout.lua;
+        }
+
         location /lua-fetch-body-after-yield {
             lua_web_file $TEST_ROOT/app-fetch-body-after-yield.lua;
         }
@@ -1344,6 +1405,53 @@ http {
     include $TEST_ROOT/conf/https-upstream.conf;
 }
 EOF
+
+SLOW_FETCH_PID=
+
+python3 - "$SLOW_FETCH_PORT" <<'PY' &
+import socket
+import sys
+import time
+
+port = int(sys.argv[1])
+server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+server.bind(("127.0.0.1", port))
+server.listen(16)
+
+while True:
+    conn, _ = server.accept()
+
+    with conn:
+        conn.settimeout(1)
+        data = b""
+
+        try:
+            while b"\r\n\r\n" not in data:
+                chunk = conn.recv(4096)
+                if not chunk:
+                    break
+
+                data += chunk
+
+        except OSError:
+            pass
+
+        time.sleep(0.3)
+
+        try:
+            conn.sendall(
+                b"HTTP/1.1 200 OK\r\n"
+                b"Content-Length: 4\r\n"
+                b"Connection: close\r\n"
+                b"\r\n"
+                b"slow"
+            )
+
+        except OSError:
+            pass
+PY
+SLOW_FETCH_PID=$!
 
 DNS_PID=
 
@@ -1402,6 +1510,9 @@ DNS_PID=$!
 
 cleanup() {
     "$NGINX" -p "$TEST_ROOT/" -c conf/nginx.conf -s stop >/dev/null 2>&1 || true
+    if [ -n "$SLOW_FETCH_PID" ]; then
+        kill "$SLOW_FETCH_PID" >/dev/null 2>&1 || true
+    fi
     if [ -n "$DNS_PID" ]; then
         kill "$DNS_PID" >/dev/null 2>&1 || true
     fi

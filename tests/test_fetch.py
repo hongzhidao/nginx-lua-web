@@ -106,6 +106,16 @@ def test_fetch_sends_request_body():
         raise AssertionError("expected fetch to send request bodies")
 
 
+def test_fetch_read_timeout_option():
+    status, body = request("/lua-fetch-timeout")
+
+    if status != 200:
+        raise AssertionError(f"expected 200, got {status}: {body!r}")
+
+    if body != "fetch response header read timed out":
+        raise AssertionError(f"expected fetch read timeout, got {body!r}")
+
+
 def main():
     return run_tests("fetch API behavior", [
         ("fetch returns Response with body",
@@ -130,6 +140,8 @@ def main():
          test_fetch_reads_response_header),
         ("fetch sends request body",
          test_fetch_sends_request_body),
+        ("fetch read timeout option",
+         test_fetch_read_timeout_option),
     ])
 
 
