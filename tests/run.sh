@@ -51,6 +51,24 @@ while True:
 PY
 )}
 
+DNS_PORT=${DNS_PORT:-$(python3 - "$PORT" "$UPSTREAM_PORT" <<'PY'
+import socket
+import sys
+
+used = {int(arg) for arg in sys.argv[1:]}
+
+while True:
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.bind(("127.0.0.1", 0))
+    port = s.getsockname()[1]
+    s.close()
+
+    if port not in used:
+        print(port)
+        break
+PY
+)}
+
 rm -rf "$TEST_ROOT"
 mkdir -p "$TEST_ROOT/conf" "$TEST_ROOT/logs" "$TEST_ROOT/client_body_temp"
 mkdir -p "$TEST_ROOT/proxy_temp" "$TEST_ROOT/fastcgi_temp"
@@ -563,7 +581,8 @@ local function text_stream(text)
 end
 
 local app = App.new()
-local fetch_target = "http://127.0.0.1:__UPSTREAM_PORT__"
+local fetch_target = "http://fetch.test:__UPSTREAM_PORT__"
+local missing_target = "http://missing.test:__UPSTREAM_PORT__"
 
 local function upstream_url(request)
     return request.url:gsub("/lua%-fetch.*$", "/fetch-upstream")
@@ -590,6 +609,29 @@ local function read_body(response)
 end
 
 app:all("*", function(request)
+    if request.url:match("/lua%-fetch%-dns%-fail$") then
+        local response, err = fetch(request, nil, { target = missing_target })
+
+        if response ~= nil then
+            return Response.new({
+                status = 500,
+                body = text_stream("fetch DNS failure returned response"),
+            })
+        end
+
+        if err ~= "fetch DNS resolve failed" then
+            return Response.new({
+                status = 500,
+                body = text_stream(err or "fetch DNS error missing"),
+            })
+        end
+
+        return Response.new({
+            status = 200,
+            body = text_stream("fetch DNS resolve failed"),
+        })
+    end
+
     local url = upstream_url(request)
     local body = ReadableStream.new({
         start = function(controller)
@@ -961,6 +1003,8 @@ events {
 
 http {
     access_log off;
+    resolver 127.0.0.1:$DNS_PORT ipv6=off;
+    resolver_timeout 1s;
 
     server {
         listen 127.0.0.1:$PORT;
@@ -1009,6 +1053,10 @@ http {
             lua_web_file $TEST_ROOT/app-fetch.lua;
         }
 
+        location /lua-fetch-dns-fail {
+            lua_web_file $TEST_ROOT/app-fetch.lua;
+        }
+
         location /lua-fetch-body-after-yield {
             lua_web_file $TEST_ROOT/app-fetch-body-after-yield.lua;
         }
@@ -1048,8 +1096,66 @@ http {
 }
 EOF
 
+DNS_PID=
+
+python3 - "$DNS_PORT" <<'PY' &
+import socket
+import struct
+import sys
+
+port = int(sys.argv[1])
+server = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+server.bind(("127.0.0.1", port))
+
+while True:
+    data, addr = server.recvfrom(512)
+
+    if len(data) < 12:
+        continue
+
+    offset = 12
+    labels = []
+
+    while offset < len(data):
+        size = data[offset]
+        offset += 1
+
+        if size == 0:
+            break
+
+        if offset + size > len(data):
+            break
+
+        labels.append(data[offset:offset + size])
+        offset += size
+
+    if offset + 4 > len(data):
+        continue
+
+    qtype, qclass = struct.unpack("!HH", data[offset:offset + 4])
+    question = data[12:offset + 4]
+    name = b".".join(labels).lower()
+    found = name == b"fetch.test" and qtype == 1 and qclass == 1
+
+    flags = 0x8180 if found else 0x8183
+    answer_count = 1 if found else 0
+    response = data[:2] + struct.pack("!HHHHH", flags, 1, answer_count, 0, 0)
+    response += question
+
+    if found:
+        response += b"\xc0\x0c"
+        response += struct.pack("!HHIH", 1, 1, 60, 4)
+        response += socket.inet_aton("127.0.0.1")
+
+    server.sendto(response, addr)
+PY
+DNS_PID=$!
+
 cleanup() {
     "$NGINX" -p "$TEST_ROOT/" -c conf/nginx.conf -s stop >/dev/null 2>&1 || true
+    if [ -n "$DNS_PID" ]; then
+        kill "$DNS_PID" >/dev/null 2>&1 || true
+    fi
 }
 
 trap cleanup EXIT INT TERM

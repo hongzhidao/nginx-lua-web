@@ -30,6 +30,7 @@ struct ngx_http_lua_fetch_s {
 
     ngx_pool_t                 *pool;
     ngx_peer_connection_t       peer;
+    ngx_resolver_ctx_t         *resolver;
     ngx_sockaddr_t              sockaddr;
     ngx_str_t                   scheme;
     ngx_str_t                   host;
@@ -76,6 +77,10 @@ static ngx_int_t ngx_http_lua_fetch_parse_uri(ngx_http_lua_fetch_t *fetch,
     ngx_str_t *url);
 static ngx_int_t ngx_http_lua_fetch_parse_origin(
     ngx_http_lua_fetch_t *fetch);
+static ngx_int_t ngx_http_lua_fetch_resolve(ngx_http_lua_fetch_t *fetch);
+static void ngx_http_lua_fetch_resolve_handler(ngx_resolver_ctx_t *ctx);
+static ngx_int_t ngx_http_lua_fetch_set_peer(ngx_http_lua_fetch_t *fetch,
+    struct sockaddr *sockaddr, socklen_t socklen);
 
 static ngx_int_t ngx_http_lua_fetch_create_request(
     ngx_http_lua_fetch_t *fetch);
@@ -148,8 +153,8 @@ ngx_http_lua_fetch_register(lua_State *L)
 static int
 ngx_http_lua_fetch(lua_State *L)
 {
-    ngx_int_t                rc;
-    ngx_http_lua_fetch_t    *fetch;
+    ngx_int_t              rc;
+    ngx_http_lua_fetch_t  *fetch;
 
     fetch = ngx_http_lua_fetch_create(L);
     if (fetch == NULL) {
@@ -163,15 +168,24 @@ ngx_http_lua_fetch(lua_State *L)
     lua_replace(L, 1);
     lua_settop(L, 1);
 
-    if (ngx_http_lua_fetch_parse_origin(fetch) != NGX_OK) {
+    rc = ngx_http_lua_fetch_parse_origin(fetch);
+    if (rc == NGX_ERROR) {
         return ngx_http_lua_fetch_push_result(L, fetch);
     }
 
     if (ngx_http_lua_fetch_create_request(fetch) != NGX_OK) {
-        return luaL_error(L, "no memory");
+        if (fetch->resolver != NULL) {
+            ngx_resolve_name_done(fetch->resolver);
+            fetch->resolver = NULL;
+        }
+
+        ngx_http_lua_fetch_fail(fetch, "no memory");
+        return ngx_http_lua_fetch_push_result(L, fetch);
     }
 
-    rc = ngx_http_lua_fetch_connect(fetch);
+    if (rc == NGX_OK) {
+        rc = ngx_http_lua_fetch_connect(fetch);
+    }
 
     if (rc == NGX_AGAIN) {
         return lua_yieldk(L, 0, (lua_KContext) (intptr_t) fetch,
@@ -426,6 +440,7 @@ ngx_http_lua_fetch_create(lua_State *L)
     fetch->response = NULL;
     fetch->response_body = NULL;
     fetch->pool = ctx->pool;
+    fetch->resolver = NULL;
     fetch->content_length_n = -1;
     fetch->body_read = 0;
     fetch->request_sent = 0;
@@ -536,7 +551,6 @@ ngx_http_lua_fetch_parse_origin(ngx_http_lua_fetch_t *fetch)
 {
     u_char              *p, *last, *authority, *path, *query, *fragment;
     ngx_url_t            parsed;
-    ngx_http_request_t  *r;
     ngx_str_t           *url;
     ngx_uint_t           target;
 
@@ -638,27 +652,126 @@ ngx_http_lua_fetch_parse_origin(ngx_http_lua_fetch_t *fetch)
         return NGX_ERROR;
     }
 
-    if (parsed.naddrs == 0) {
-        ngx_http_lua_fetch_fail(fetch, "fetch DNS resolve is not supported yet");
-        return NGX_ERROR;
-    }
-
-    if (parsed.addrs[0].socklen > (socklen_t) sizeof(ngx_sockaddr_t)) {
-        ngx_http_lua_fetch_fail(fetch, "fetch connect target is too large");
-        return NGX_ERROR;
-    }
-
     fetch->host = parsed.host;
     fetch->port = parsed.port;
     fetch->peer_name = fetch->authority;
 
-    ngx_memcpy(&fetch->sockaddr, parsed.addrs[0].sockaddr,
-               parsed.addrs[0].socklen);
+    if (parsed.naddrs == 0) {
+        return ngx_http_lua_fetch_resolve(fetch);
+    }
+
+    return ngx_http_lua_fetch_set_peer(fetch, parsed.addrs[0].sockaddr,
+                                       parsed.addrs[0].socklen);
+}
+
+
+static ngx_int_t
+ngx_http_lua_fetch_resolve(ngx_http_lua_fetch_t *fetch)
+{
+    ngx_int_t                  rc;
+    ngx_resolver_ctx_t        *ctx;
+    ngx_http_core_loc_conf_t  *clcf;
+
+    clcf = ngx_http_get_module_loc_conf(fetch->r, ngx_http_core_module);
+
+    ctx = ngx_resolve_start(clcf->resolver, NULL);
+    if (ctx == NULL) {
+        ngx_http_lua_fetch_fail(fetch, "no memory");
+        return NGX_ERROR;
+    }
+
+    if (ctx == NGX_NO_RESOLVER) {
+        ngx_http_lua_fetch_fail(fetch,
+                                "no resolver defined to resolve fetch host");
+        return NGX_ERROR;
+    }
+
+    ctx->name = fetch->host;
+    ctx->handler = ngx_http_lua_fetch_resolve_handler;
+    ctx->data = fetch;
+    ctx->timeout = clcf->resolver_timeout;
+
+    fetch->resolver = ctx;
+
+    rc = ngx_resolve_name(ctx);
+    if (rc != NGX_OK) {
+        fetch->resolver = NULL;
+        ngx_http_lua_fetch_fail(fetch, "fetch DNS resolve failed");
+        return NGX_ERROR;
+    }
+
+    if (fetch->resolver == NULL) {
+        return fetch->failed ? NGX_ERROR : NGX_OK;
+    }
+
+    return NGX_AGAIN;
+}
+
+
+static void
+ngx_http_lua_fetch_resolve_handler(ngx_resolver_ctx_t *ctx)
+{
+    ngx_int_t              rc;
+    ngx_uint_t             resume;
+    ngx_connection_t      *c;
+    ngx_http_lua_fetch_t  *fetch;
+
+    resume = ctx->async;
+    fetch = ctx->data;
+
+    if (ctx->state) {
+        ngx_http_lua_fetch_fail(fetch, "fetch DNS resolve failed");
+
+    } else if (ctx->naddrs == 0) {
+        ngx_http_lua_fetch_fail(fetch, "fetch DNS resolved no addresses");
+
+    } else if (ngx_http_lua_fetch_set_peer(fetch, ctx->addrs[0].sockaddr,
+                                           ctx->addrs[0].socklen)
+               != NGX_OK)
+    {
+        ngx_http_lua_fetch_fail(fetch, "fetch connect target is too large");
+    }
+
+    fetch->resolver = NULL;
+    ngx_resolve_name_done(ctx);
+
+    if (!resume) {
+        return;
+    }
+
+    if (!fetch->failed) {
+        rc = ngx_http_lua_fetch_connect(fetch);
+        if (rc == NGX_AGAIN) {
+            goto done;
+        }
+    }
+
+    ngx_http_lua_fetch_resume(fetch);
+
+done:
+
+    c = fetch->r->connection;
+    ngx_http_run_posted_requests(c);
+}
+
+
+static ngx_int_t
+ngx_http_lua_fetch_set_peer(ngx_http_lua_fetch_t *fetch,
+    struct sockaddr *sockaddr, socklen_t socklen)
+{
+    ngx_http_request_t  *r;
+
+    if (socklen > (socklen_t) sizeof(ngx_sockaddr_t)) {
+        return NGX_ERROR;
+    }
+
+    ngx_memcpy(&fetch->sockaddr, sockaddr, socklen);
+    ngx_inet_set_port(&fetch->sockaddr.sockaddr, fetch->port);
 
     r = fetch->r;
 
     fetch->peer.sockaddr = &fetch->sockaddr.sockaddr;
-    fetch->peer.socklen = parsed.addrs[0].socklen;
+    fetch->peer.socklen = socklen;
     fetch->peer.name = &fetch->peer_name;
     fetch->peer.get = ngx_event_get_peer;
     fetch->peer.log = r->connection->log;
@@ -1792,6 +1905,11 @@ static void
 ngx_http_lua_fetch_cleanup(void *data)
 {
     ngx_http_lua_fetch_t  *fetch = data;
+
+    if (fetch->resolver != NULL) {
+        ngx_resolve_name_done(fetch->resolver);
+        fetch->resolver = NULL;
+    }
 
     ngx_http_lua_fetch_free_peer(fetch, 0);
 }
