@@ -117,6 +117,15 @@ static ngx_int_t ngx_http_lua_fetch_create_request(
     ngx_http_lua_fetch_t *fetch);
 static ngx_int_t ngx_http_lua_fetch_connect(ngx_http_lua_fetch_t *fetch);
 static ngx_int_t ngx_http_lua_fetch_test_connect(ngx_connection_t *c);
+#if (NGX_HTTP_SSL)
+static ngx_int_t ngx_http_lua_fetch_ssl_init(ngx_log_t *log);
+static ngx_int_t ngx_http_lua_fetch_ssl_start(ngx_http_lua_fetch_t *fetch);
+static ngx_int_t ngx_http_lua_fetch_ssl_handshake(
+    ngx_http_lua_fetch_t *fetch);
+static void ngx_http_lua_fetch_ssl_handshake_handler(ngx_connection_t *c);
+static ngx_int_t ngx_http_lua_fetch_ssl_name(ngx_http_lua_fetch_t *fetch);
+static void ngx_http_lua_fetch_ssl_cleanup(void *data);
+#endif
 static void ngx_http_lua_fetch_send_request_handler(ngx_event_t *ev);
 static ngx_int_t ngx_http_lua_fetch_send_request(ngx_http_lua_fetch_t *fetch);
 static ngx_int_t ngx_http_lua_fetch_send_buffer(ngx_http_lua_fetch_t *fetch);
@@ -194,6 +203,11 @@ static void ngx_http_lua_fetch_keepalive_cleanup(void *data);
 
 static ngx_http_lua_fetch_keepalive_pool_t
     ngx_http_lua_fetch_keepalive_pool;
+
+#if (NGX_HTTP_SSL)
+static ngx_ssl_t     ngx_http_lua_fetch_ssl;
+static ngx_cycle_t  *ngx_http_lua_fetch_ssl_cycle;
+#endif
 
 
 void
@@ -606,6 +620,7 @@ ngx_http_lua_fetch_parse_origin(ngx_http_lua_fetch_t *fetch)
     u_char              *p, *last, *authority, *path, *query, *fragment;
     ngx_url_t            parsed;
     ngx_str_t           *url;
+    in_port_t            default_port;
     ngx_uint_t           target;
 
     if (ngx_http_lua_fetch_parse_uri(fetch, &fetch->request->url) != NGX_OK) {
@@ -633,24 +648,32 @@ ngx_http_lua_fetch_parse_origin(ngx_http_lua_fetch_t *fetch)
         fetch->scheme.data = p;
         fetch->scheme.len = sizeof("https") - 1;
         fetch->ssl = 1;
-        ngx_http_lua_fetch_fail(fetch, "fetch https is not supported yet");
-        return NGX_ERROR;
-    }
+        authority = p + sizeof("https://") - 1;
+        default_port = 443;
 
-    if (ngx_strncasecmp(p, (u_char *) "http://", sizeof("http://") - 1)
-        != 0)
+    } else if (ngx_strncasecmp(p, (u_char *) "http://",
+                               sizeof("http://") - 1)
+               == 0)
     {
+        fetch->scheme.data = p;
+        fetch->scheme.len = sizeof("http") - 1;
+        fetch->ssl = 0;
+        authority = p + sizeof("http://") - 1;
+        default_port = 80;
+
+    } else {
         ngx_http_lua_fetch_fail(fetch, target
                                 ? "fetch target scheme is not supported"
                                 : "fetch URL scheme is not supported");
         return NGX_ERROR;
     }
 
-    fetch->scheme.data = p;
-    fetch->scheme.len = sizeof("http") - 1;
-    fetch->ssl = 0;
-
-    authority = p + sizeof("http://") - 1;
+#if !(NGX_HTTP_SSL)
+    if (fetch->ssl) {
+        ngx_http_lua_fetch_fail(fetch, "fetch https is not supported");
+        return NGX_ERROR;
+    }
+#endif
 
     fragment = ngx_strlchr(authority, last, '#');
     if (fragment != NULL) {
@@ -696,7 +719,7 @@ ngx_http_lua_fetch_parse_origin(ngx_http_lua_fetch_t *fetch)
 
     ngx_memzero(&parsed, sizeof(ngx_url_t));
     parsed.url = fetch->authority;
-    parsed.default_port = 80;
+    parsed.default_port = default_port;
     parsed.no_resolve = 1;
 
     if (ngx_parse_url(fetch->pool, &parsed) != NGX_OK) {
@@ -980,6 +1003,199 @@ ngx_http_lua_fetch_test_connect(ngx_connection_t *c)
 }
 
 
+#if (NGX_HTTP_SSL)
+
+static ngx_int_t
+ngx_http_lua_fetch_ssl_init(ngx_log_t *log)
+{
+    ngx_pool_cleanup_t  *cln;
+
+    if (ngx_http_lua_fetch_ssl.ctx != NULL
+        && ngx_http_lua_fetch_ssl_cycle == (ngx_cycle_t *) ngx_cycle)
+    {
+        return NGX_OK;
+    }
+
+    if (ngx_http_lua_fetch_ssl.ctx != NULL) {
+        ngx_http_lua_fetch_ssl_cleanup(&ngx_http_lua_fetch_ssl);
+    }
+
+    ngx_memzero(&ngx_http_lua_fetch_ssl, sizeof(ngx_ssl_t));
+    ngx_http_lua_fetch_ssl.log = log;
+
+    if (ngx_ssl_create(&ngx_http_lua_fetch_ssl, NGX_SSL_DEFAULT_PROTOCOLS,
+                       NULL)
+        != NGX_OK)
+    {
+        return NGX_ERROR;
+    }
+
+    cln = ngx_pool_cleanup_add(ngx_cycle->pool, 0);
+    if (cln == NULL) {
+        ngx_http_lua_fetch_ssl_cleanup(&ngx_http_lua_fetch_ssl);
+        return NGX_ERROR;
+    }
+
+    cln->handler = ngx_http_lua_fetch_ssl_cleanup;
+    cln->data = &ngx_http_lua_fetch_ssl;
+
+    ngx_http_lua_fetch_ssl_cycle = (ngx_cycle_t *) ngx_cycle;
+
+    return NGX_OK;
+}
+
+
+static ngx_int_t
+ngx_http_lua_fetch_ssl_start(ngx_http_lua_fetch_t *fetch)
+{
+    ngx_int_t          rc;
+    ngx_connection_t  *c;
+
+    c = fetch->peer.connection;
+
+    if (ngx_http_lua_fetch_ssl_init(fetch->r->connection->log) != NGX_OK) {
+        ngx_http_lua_fetch_fail(fetch, "fetch SSL init failed");
+        return NGX_ERROR;
+    }
+
+    if (ngx_ssl_create_connection(&ngx_http_lua_fetch_ssl, c, NGX_SSL_CLIENT)
+        != NGX_OK)
+    {
+        ngx_http_lua_fetch_fail(fetch, "fetch SSL init failed");
+        return NGX_ERROR;
+    }
+
+    if (ngx_http_lua_fetch_ssl_name(fetch) != NGX_OK) {
+        ngx_http_lua_fetch_fail(fetch, "fetch SSL server name failed");
+        return NGX_ERROR;
+    }
+
+    fetch->r->connection->log->action = "SSL handshaking to fetch upstream";
+
+    rc = ngx_ssl_handshake(c);
+
+    if (rc == NGX_AGAIN) {
+        if (!c->write->timer_set) {
+            ngx_add_timer(c->write, NGX_HTTP_LUA_FETCH_CONNECT_TIMEOUT);
+        }
+
+        c->ssl->handler = ngx_http_lua_fetch_ssl_handshake_handler;
+        return NGX_AGAIN;
+    }
+
+    return ngx_http_lua_fetch_ssl_handshake(fetch);
+}
+
+
+static ngx_int_t
+ngx_http_lua_fetch_ssl_handshake(ngx_http_lua_fetch_t *fetch)
+{
+    ngx_connection_t  *c;
+
+    c = fetch->peer.connection;
+
+    if (c->ssl->handshaked) {
+        fetch->r->connection->log->action = NULL;
+
+        if (!c->ssl->sendfile) {
+            c->sendfile = 0;
+        }
+
+        c->write->handler = ngx_http_lua_fetch_send_request_handler;
+        c->read->handler = ngx_http_lua_fetch_process_header_handler;
+
+        ngx_log_error(NGX_LOG_NOTICE, fetch->r->connection->log, 0,
+                      "fetch SSL handshake completed");
+
+        return ngx_http_lua_fetch_send_request(fetch);
+    }
+
+    if (c->write->timedout) {
+        ngx_http_lua_fetch_fail(fetch, "fetch SSL handshake timed out");
+        return NGX_ERROR;
+    }
+
+    ngx_http_lua_fetch_fail(fetch, "fetch SSL handshake failed");
+
+    return NGX_ERROR;
+}
+
+
+static void
+ngx_http_lua_fetch_ssl_handshake_handler(ngx_connection_t *c)
+{
+    ngx_http_lua_fetch_t  *fetch;
+
+    fetch = c->data;
+
+    if (ngx_http_lua_fetch_ssl_handshake(fetch) == NGX_AGAIN) {
+        return;
+    }
+
+    ngx_http_lua_fetch_resume(fetch);
+}
+
+
+static ngx_int_t
+ngx_http_lua_fetch_ssl_name(ngx_http_lua_fetch_t *fetch)
+{
+#ifdef SSL_CTRL_SET_TLSEXT_HOSTNAME
+    u_char            *p;
+    ngx_str_t          name;
+    ngx_connection_t  *c;
+
+    name = fetch->host;
+
+    if (name.len == 0 || *name.data == '['
+        || ngx_strlchr(name.data, name.data + name.len, ':') != NULL
+        || ngx_inet_addr(name.data, name.len) != INADDR_NONE)
+    {
+        return NGX_OK;
+    }
+
+    p = ngx_pnalloc(fetch->pool, name.len + 1);
+    if (p == NULL) {
+        return NGX_ERROR;
+    }
+
+    (void) ngx_cpystrn(p, name.data, name.len + 1);
+
+    c = fetch->peer.connection;
+
+    ngx_log_debug1(NGX_LOG_DEBUG_HTTP, fetch->r->connection->log, 0,
+                   "fetch SSL server name: \"%s\"", p);
+
+    if (SSL_set_tlsext_host_name(c->ssl->connection, (char *) p) == 0) {
+        ngx_ssl_error(NGX_LOG_ERR, fetch->r->connection->log, 0,
+                      "SSL_set_tlsext_host_name(\"%s\") failed", p);
+        return NGX_ERROR;
+    }
+#endif
+
+    return NGX_OK;
+}
+
+
+static void
+ngx_http_lua_fetch_ssl_cleanup(void *data)
+{
+    ngx_ssl_t  *ssl = data;
+
+    if (ssl->ctx == NULL) {
+        return;
+    }
+
+    ngx_ssl_cleanup_ctx(ssl);
+    ngx_memzero(ssl, sizeof(ngx_ssl_t));
+
+    if (ssl == &ngx_http_lua_fetch_ssl) {
+        ngx_http_lua_fetch_ssl_cycle = NULL;
+    }
+}
+
+#endif
+
+
 static void
 ngx_http_lua_fetch_send_request_handler(ngx_event_t *ev)
 {
@@ -1020,6 +1236,20 @@ ngx_http_lua_fetch_send_request(ngx_http_lua_fetch_t *fetch)
         {
             ngx_http_lua_fetch_fail(fetch, "fetch connect failed");
             return NGX_ERROR;
+        }
+
+        if (fetch->ssl) {
+#if (NGX_HTTP_SSL)
+            if (c->ssl == NULL) {
+                rc = ngx_http_lua_fetch_ssl_start(fetch);
+                if (rc != NGX_OK) {
+                    return rc;
+                }
+            }
+#else
+            ngx_http_lua_fetch_fail(fetch, "fetch https is not supported");
+            return NGX_ERROR;
+#endif
         }
 
         fetch->request_sent = 1;
@@ -1981,6 +2211,13 @@ ngx_http_lua_fetch_free_peer(ngx_http_lua_fetch_t *fetch, ngx_uint_t keepalive)
     {
         return;
     }
+
+#if (NGX_HTTP_SSL)
+    if (c->ssl) {
+        ngx_http_lua_fetch_keepalive_close(c);
+        return;
+    }
+#endif
 
     if (c->pool != NULL) {
         ngx_destroy_pool(c->pool);

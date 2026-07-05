@@ -1,4 +1,9 @@
+import os
+
 from lua_web_test import count_error_log, delayed_body_request, request, run_tests
+
+
+HAVE_HTTP_SSL = os.environ.get("TEST_NGINX_HAVE_HTTP_SSL") == "1"
 
 
 def test_fetch_returns_response_with_body():
@@ -53,14 +58,37 @@ def test_fetch_dns_failure_returns_error():
         raise AssertionError(f"expected DNS failure error, got {body!r}")
 
 
+def test_fetch_https_returns_response():
+    if not HAVE_HTTP_SSL:
+        return
+
+    status, body = request("/lua-fetch-https")
+
+    if status != 200:
+        raise AssertionError(f"expected 200, got {status}: {body!r}")
+
+    if body != "fetch HTTPS response":
+        raise AssertionError(f"expected HTTPS response body, got {body!r}")
+
+
 def test_fetch_opens_tcp_connection():
     connected = count_error_log("fetch connected")
+    min_connected = 3 if HAVE_HTTP_SSL else 2
+    max_connected = 4 if HAVE_HTTP_SSL else 3
 
-    if connected < 2:
+    if connected < min_connected:
         raise AssertionError("expected fetch to open TCP connections")
 
-    if connected > 3:
+    if connected > max_connected:
         raise AssertionError("expected fetch keepalive to limit TCP connects")
+
+
+def test_fetch_completes_ssl_handshake():
+    if not HAVE_HTTP_SSL:
+        return
+
+    if count_error_log("fetch SSL handshake completed") < 1:
+        raise AssertionError("expected fetch to complete an SSL handshake")
 
 
 def test_fetch_reuses_tcp_connection():
@@ -90,8 +118,12 @@ def main():
          test_fetch_head_response_has_nil_body),
         ("fetch DNS failure returns error",
          test_fetch_dns_failure_returns_error),
+        ("fetch HTTPS returns response",
+         test_fetch_https_returns_response),
         ("fetch opens TCP connection",
          test_fetch_opens_tcp_connection),
+        ("fetch completes SSL handshake",
+         test_fetch_completes_ssl_handshake),
         ("fetch reuses TCP connection",
          test_fetch_reuses_tcp_connection),
         ("fetch reads response header",

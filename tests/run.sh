@@ -23,6 +23,13 @@ if [ "$NGINX" = "$DEFAULT_NGINX" ]; then
     fi
 fi
 
+if "$NGINX" -V 2>&1 | grep -q -- '--with-http_ssl_module'; then
+    HAVE_HTTP_SSL=1
+
+else
+    HAVE_HTTP_SSL=0
+fi
+
 PORT=${PORT:-$(python3 - <<'PY'
 import socket
 
@@ -51,7 +58,25 @@ while True:
 PY
 )}
 
-DNS_PORT=${DNS_PORT:-$(python3 - "$PORT" "$UPSTREAM_PORT" <<'PY'
+HTTPS_UPSTREAM_PORT=${HTTPS_UPSTREAM_PORT:-$(python3 - "$PORT" "$UPSTREAM_PORT" <<'PY'
+import socket
+import sys
+
+used = {int(arg) for arg in sys.argv[1:]}
+
+while True:
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.bind(("127.0.0.1", 0))
+    port = s.getsockname()[1]
+    s.close()
+
+    if port not in used:
+        print(port)
+        break
+PY
+)}
+
+DNS_PORT=${DNS_PORT:-$(python3 - "$PORT" "$UPSTREAM_PORT" "$HTTPS_UPSTREAM_PORT" <<'PY'
 import socket
 import sys
 
@@ -73,6 +98,27 @@ rm -rf "$TEST_ROOT"
 mkdir -p "$TEST_ROOT/conf" "$TEST_ROOT/logs" "$TEST_ROOT/client_body_temp"
 mkdir -p "$TEST_ROOT/proxy_temp" "$TEST_ROOT/fastcgi_temp"
 mkdir -p "$TEST_ROOT/uwsgi_temp" "$TEST_ROOT/scgi_temp"
+
+: > "$TEST_ROOT/conf/https-upstream.conf"
+
+if [ "$HAVE_HTTP_SSL" = 1 ]; then
+    openssl req -x509 -newkey rsa:2048 -nodes \
+        -keyout "$TEST_ROOT/conf/fetch.test.key" \
+        -out "$TEST_ROOT/conf/fetch.test.crt" \
+        -subj "/CN=fetch.test" -days 1 >/dev/null 2>&1
+
+    cat > "$TEST_ROOT/conf/https-upstream.conf" <<EOF
+    server {
+        listen 127.0.0.1:$HTTPS_UPSTREAM_PORT ssl;
+        ssl_certificate $TEST_ROOT/conf/fetch.test.crt;
+        ssl_certificate_key $TEST_ROOT/conf/fetch.test.key;
+
+        location /fetch-upstream {
+            lua_web_file $TEST_ROOT/app-fetch-upstream.lua;
+        }
+    }
+EOF
+fi
 
 cat > "$TEST_ROOT/app-body.lua" <<'EOF'
 local function text_stream(text)
@@ -699,6 +745,7 @@ end
 
 local app = App.new()
 local fetch_target = "http://fetch.test:__UPSTREAM_PORT__"
+local https_fetch_url = "https://fetch.test:__HTTPS_UPSTREAM_PORT__/fetch-upstream"
 local missing_target = "http://missing.test:__UPSTREAM_PORT__"
 
 local function upstream_url(request)
@@ -726,6 +773,40 @@ local function read_body(response)
 end
 
 app:all("*", function(request)
+    if request.url:match("/lua%-fetch%-https$") then
+        local body = ReadableStream.new({
+            start = function(controller)
+                controller:enqueue("init ")
+                controller:enqueue("body")
+                controller:close()
+            end,
+        })
+
+        local response, err = fetch(https_fetch_url, {
+            method = "POST",
+            body = body,
+        })
+
+        if response == nil or response.status ~= 200 then
+            return Response.new({
+                status = 500,
+                body = text_stream(err or "fetch HTTPS status mismatch"),
+            })
+        end
+
+        if read_body(response) ~= "fetch init response" then
+            return Response.new({
+                status = 500,
+                body = text_stream("fetch HTTPS body mismatch"),
+            })
+        end
+
+        return Response.new({
+            status = 200,
+            body = text_stream("fetch HTTPS response"),
+        })
+    end
+
     if request.url:match("/lua%-fetch%-dns%-fail$") then
         local response, err = fetch(request, nil, { target = missing_target })
 
@@ -799,6 +880,7 @@ return app
 EOF
 
 sed -i "s/__UPSTREAM_PORT__/$UPSTREAM_PORT/g" "$TEST_ROOT/app-fetch.lua"
+sed -i "s/__HTTPS_UPSTREAM_PORT__/$HTTPS_UPSTREAM_PORT/g" "$TEST_ROOT/app-fetch.lua"
 
 cat > "$TEST_ROOT/app-fetch-body-after-yield.lua" <<'EOF'
 local function text_stream(text)
@@ -1151,7 +1233,7 @@ error_log  logs/error.log notice;
 pid        logs/nginx.pid;
 
 events {
-    worker_connections  16;
+    worker_connections  64;
 }
 
 http {
@@ -1214,6 +1296,10 @@ http {
             lua_web_file $TEST_ROOT/app-fetch.lua;
         }
 
+        location /lua-fetch-https {
+            lua_web_file $TEST_ROOT/app-fetch.lua;
+        }
+
         location /lua-fetch-body-after-yield {
             lua_web_file $TEST_ROOT/app-fetch-body-after-yield.lua;
         }
@@ -1254,6 +1340,8 @@ http {
             lua_web_file $TEST_ROOT/app-fetch-upstream.lua;
         }
     }
+
+    include $TEST_ROOT/conf/https-upstream.conf;
 }
 EOF
 
@@ -1339,5 +1427,6 @@ for test_file in \
 do
     TEST_NGINX_PORT="$PORT" \
     TEST_NGINX_ROOT="$TEST_ROOT" \
+    TEST_NGINX_HAVE_HTTP_SSL="$HAVE_HTTP_SSL" \
         python3 "$MODULE_DIR/tests/$test_file"
 done
