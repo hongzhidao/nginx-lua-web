@@ -576,6 +576,9 @@ app:all("*", function()
         if empty.body ~= nil then
             error("default response body should be nil")
         end
+        if empty.bodyUsed then
+            error("default response bodyUsed should be false")
+        end
 
         local with_body = Response.new({
             status = 202,
@@ -590,6 +593,21 @@ app:all("*", function()
         end
         if with_body.body ~= body then
             error("response body stream mismatch")
+        end
+        if with_body.bodyUsed then
+            error("response bodyUsed should be false before read")
+        end
+
+        local reader = with_body.body:getReader()
+        while true do
+            local result = reader:read()
+            if result.done then
+                break
+            end
+        end
+
+        if not with_body.bodyUsed then
+            error("response bodyUsed should be true after read")
         end
 
         local bad_status_ok = pcall(function()

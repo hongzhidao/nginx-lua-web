@@ -155,6 +155,12 @@ ngx_lua_web_response_index(lua_State *L)
         return 1;
     }
 
+    if (len == 8 && ngx_strncmp(name, "bodyUsed", 8) == 0) {
+        lua_pushboolean(L, response->body != NULL
+                           && ngx_lua_web_stream_body_used(response->body));
+        return 1;
+    }
+
     if (len == 6 && ngx_strncmp(name, "status", 6) == 0) {
         lua_pushinteger(L, response->status);
         return 1;
