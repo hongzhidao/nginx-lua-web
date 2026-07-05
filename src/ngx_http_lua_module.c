@@ -526,6 +526,8 @@ ngx_http_lua_create_main_conf(ngx_conf_t *cf)
     ngx_lua_web_request_register(conf->lua);
     ngx_lua_web_response_register(conf->lua);
     ngx_lua_web_headers_register(conf->lua);
+    ngx_lua_web_url_register(conf->lua);
+    ngx_lua_web_search_params_register(conf->lua);
     ngx_lua_web_stream_register(conf->lua);
     ngx_http_lua_fetch_register(conf->lua);
     ngx_lua_app_register(conf->lua);

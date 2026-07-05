@@ -16,6 +16,8 @@
 typedef struct ngx_lua_web_request_s  ngx_lua_web_request_t;
 typedef struct ngx_lua_web_response_s  ngx_lua_web_response_t;
 typedef struct ngx_lua_web_headers_s  ngx_lua_web_headers_t;
+typedef struct ngx_lua_web_url_s  ngx_lua_web_url_t;
+typedef struct ngx_lua_web_search_params_s  ngx_lua_web_search_params_t;
 typedef struct ngx_lua_web_stream_s  ngx_lua_web_stream_t;
 typedef struct ngx_lua_web_stream_source_s  ngx_lua_web_stream_source_t;
 
@@ -65,6 +67,8 @@ void ngx_lua_web_headers_set(lua_State *L,
     ngx_lua_web_headers_t *headers, const char *name, size_t name_len,
     const char *value, size_t value_len);
 void ngx_lua_web_headers_register(lua_State *L);
+void ngx_lua_web_url_register(lua_State *L);
+void ngx_lua_web_search_params_register(lua_State *L);
 ngx_lua_web_stream_t *ngx_lua_web_stream_create(lua_State *L,
     ngx_pool_t *pool);
 ngx_lua_web_stream_t *ngx_lua_web_stream_get(lua_State *L, int index);
