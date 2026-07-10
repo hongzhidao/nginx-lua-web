@@ -51,6 +51,48 @@ def test_lua_vm_is_shared_from_main_conf():
         raise AssertionError(f"expected shared VM body, got {body!r}")
 
 
+def test_lua_web_file_handles_non_string_error():
+    pattern = 'app-non-string-error.lua" failed: table'
+    before = count_error_log(pattern)
+    crashes = count_error_log("exited on signal")
+
+    status, _ = request("/lua-non-string-file-error")
+
+    if status != 500:
+        raise AssertionError(f"expected 500, got {status}")
+
+    if count_error_log(pattern) != before + 1:
+        raise AssertionError("expected non-string file error in log")
+
+    if count_error_log("exited on signal") != crashes:
+        raise AssertionError("worker crashed on non-string file error")
+
+    status, body = request(LUA_WEB_PATH)
+    if status != 201 or body != "hello from lua handler":
+        raise AssertionError("worker did not survive non-string file error")
+
+
+def test_lua_handler_handles_non_string_error():
+    pattern = 'app-non-string-handler-error.lua" route handler failed: table'
+    before = count_error_log(pattern)
+    crashes = count_error_log("exited on signal")
+
+    status, _ = request("/lua-non-string-handler-error")
+
+    if status != 500:
+        raise AssertionError(f"expected 500, got {status}")
+
+    if count_error_log(pattern) != before + 1:
+        raise AssertionError("expected non-string handler error in log")
+
+    if count_error_log("exited on signal") != crashes:
+        raise AssertionError("worker crashed on non-string handler error")
+
+    status, body = request(LUA_WEB_PATH)
+    if status != 201 or body != "hello from lua handler":
+        raise AssertionError("worker did not survive non-string handler error")
+
+
 def test_lua_web_file_subrequest_is_rejected():
     pattern = "lua_web_file does not support subrequests"
     before = count_error_log(pattern)
@@ -80,6 +122,10 @@ def main():
          test_coroutine_library_is_not_exposed),
         ("Lua VM is shared from main conf",
          test_lua_vm_is_shared_from_main_conf),
+        ("lua_web_file handles non-string errors",
+         test_lua_web_file_handles_non_string_error),
+        ("Lua handler handles non-string errors",
+         test_lua_handler_handles_non_string_error),
         ("lua_web_file rejects subrequests",
          test_lua_web_file_subrequest_is_rejected),
     ])

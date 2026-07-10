@@ -8,6 +8,8 @@
 
 static ngx_int_t ngx_http_lua_request_set_url(lua_State *L,
     ngx_lua_web_request_t *request, ngx_http_request_t *r);
+static ngx_int_t ngx_http_lua_request_set_headers(lua_State *L,
+    ngx_lua_web_request_t *request, ngx_http_request_t *r);
 static ngx_str_t ngx_http_lua_request_scheme(ngx_http_request_t *r);
 static ngx_uint_t ngx_http_lua_request_default_port(ngx_str_t *scheme,
     in_port_t port);
@@ -58,6 +60,11 @@ ngx_http_lua_request_create(ngx_http_request_t *r, ngx_http_lua_ctx_t *ctx)
         return NULL;
     }
 
+    if (ngx_http_lua_request_set_headers(ctx->co, request, r) != NGX_OK) {
+        lua_settop(ctx->co, top);
+        return NULL;
+    }
+
     if (ngx_http_lua_request_has_body(r)) {
         body = ngx_http_lua_request_body_stream_create(r, ctx);
         if (body == NULL) {
@@ -70,6 +77,46 @@ ngx_http_lua_request_create(ngx_http_request_t *r, ngx_http_lua_ctx_t *ctx)
     }
 
     return request;
+}
+
+
+static ngx_int_t
+ngx_http_lua_request_set_headers(lua_State *L,
+    ngx_lua_web_request_t *request, ngx_http_request_t *r)
+{
+    ngx_uint_t        i;
+    ngx_list_part_t  *part;
+    ngx_table_elt_t  *header;
+
+    part = &r->headers_in.headers.part;
+    header = part->elts;
+
+    for (i = 0; /* void */; i++) {
+        if (i >= part->nelts) {
+            if (part->next == NULL) {
+                break;
+            }
+
+            part = part->next;
+            header = part->elts;
+            i = 0;
+        }
+
+        if (header[i].hash == 0) {
+            continue;
+        }
+
+        if (ngx_lua_web_headers_set_entry(
+                L, request->headers, (const char *) header[i].key.data,
+                header[i].key.len, (const char *) header[i].value.data,
+                header[i].value.len)
+            != NGX_OK)
+        {
+            return NGX_ERROR;
+        }
+    }
+
+    return NGX_OK;
 }
 
 

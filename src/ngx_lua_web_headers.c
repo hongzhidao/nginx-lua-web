@@ -520,10 +520,6 @@ void
 ngx_lua_web_headers_set(lua_State *L, ngx_lua_web_headers_t *headers,
     const char *name, size_t name_len, const char *value, size_t value_len)
 {
-    size_t                 i;
-    ngx_str_t              new_name, new_value;
-    ngx_lua_web_header_t  *header;
-
     if (!ngx_lua_web_headers_validate_name(name, name_len)) {
         (void) luaL_error(L, "invalid header name");
         return;
@@ -534,6 +530,29 @@ ngx_lua_web_headers_set(lua_State *L, ngx_lua_web_headers_t *headers,
         return;
     }
 
+    if (ngx_lua_web_headers_set_entry(L, headers, name, name_len,
+                                      value, value_len)
+        != NGX_OK)
+    {
+        (void) luaL_error(L, "no memory");
+    }
+}
+
+
+ngx_int_t
+ngx_lua_web_headers_set_entry(lua_State *L, ngx_lua_web_headers_t *headers,
+    const char *name, size_t name_len, const char *value, size_t value_len)
+{
+    size_t                 i;
+    ngx_str_t              new_name, new_value;
+    ngx_lua_web_header_t  *header;
+
+    if (!ngx_lua_web_headers_validate_name(name, name_len)
+        || !ngx_lua_web_headers_validate_value(value, value_len))
+    {
+        return NGX_DECLINED;
+    }
+
     for (i = 0; i < headers->nelts; i++) {
         header = &headers->elts[i];
 
@@ -541,39 +560,37 @@ ngx_lua_web_headers_set(lua_State *L, ngx_lua_web_headers_t *headers,
             if (ngx_lua_web_headers_dup(L, &new_value, value, value_len)
                 != NGX_OK)
             {
-                (void) luaL_error(L, "no memory");
-                return;
+                return NGX_ERROR;
             }
 
             ngx_lua_web_headers_alloc(L, header->value.data,
                                       header->value.len, 0);
             header->value = new_value;
-            return;
+            return NGX_OK;
         }
     }
 
     if (ngx_lua_web_headers_reserve(L, headers, headers->nelts + 1)
         != NGX_OK)
     {
-        (void) luaL_error(L, "no memory");
-        return;
+        return NGX_ERROR;
     }
 
     if (ngx_lua_web_headers_dup_lower(L, &new_name, name, name_len) != NGX_OK)
     {
-        (void) luaL_error(L, "no memory");
-        return;
+        return NGX_ERROR;
     }
 
     if (ngx_lua_web_headers_dup(L, &new_value, value, value_len) != NGX_OK) {
         ngx_lua_web_headers_alloc(L, new_name.data, new_name.len, 0);
-        (void) luaL_error(L, "no memory");
-        return;
+        return NGX_ERROR;
     }
 
     header = &headers->elts[headers->nelts++];
     header->name = new_name;
     header->value = new_value;
+
+    return NGX_OK;
 }
 
 

@@ -65,6 +65,30 @@ def test_request_url_is_absolute():
         raise AssertionError(f"expected request url {expected!r}, got {body!r}")
 
 
+def test_request_exposes_incoming_headers_case_insensitively():
+    status, body = request(
+        "/lua-request-headers",
+        headers={
+            "Authorization": "Bearer incoming-token",
+            "Cookie": "session=abc123; theme=dark",
+            "Content-Type": "application/json; charset=utf-8",
+            "x-incoming-test": "custom-value",
+        },
+    )
+
+    if status != 200:
+        raise AssertionError(f"expected 200, got {status}: {body!r}")
+
+    expected = {
+        "authorization": "Bearer incoming-token",
+        "cookie": "session=abc123; theme=dark",
+        "content_type": "application/json; charset=utf-8",
+        "custom": "custom-value",
+    }
+    if json.loads(body) != expected:
+        raise AssertionError(f"expected incoming headers {expected!r}, got {body!r}")
+
+
 def test_request_new():
     status, body = request("/lua-request-new")
 
@@ -97,6 +121,8 @@ def main():
          test_request_json_parses_body),
         ("request url is absolute",
          test_request_url_is_absolute),
+        ("request exposes incoming headers case-insensitively",
+         test_request_exposes_incoming_headers_case_insensitively),
         ("Request.new",
          test_request_new),
         ("request without body has nil body",

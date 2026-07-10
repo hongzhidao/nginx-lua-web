@@ -37,6 +37,7 @@ static ngx_int_t ngx_http_lua_resume_request(ngx_http_request_t *r,
 static void ngx_http_lua_resume_handler(void *data);
 static ngx_lua_web_response_t *ngx_http_lua_get_response(
     ngx_http_request_t *r, lua_State *co, int nresults);
+static ngx_str_t ngx_http_lua_error_message(lua_State *L);
 static void ngx_http_lua_cleanup_ctx(void *data);
 static char *ngx_http_lua_load_file(ngx_conf_t *cf,
     ngx_http_lua_loc_conf_t *llcf);
@@ -239,6 +240,7 @@ ngx_http_lua_run_file(ngx_http_request_t *r, ngx_http_lua_ctx_t *ctx)
     int                       nresults, rc;
     lua_State                *L, *co;
     ngx_lua_app_t            *app;
+    ngx_str_t                 error;
     ngx_http_lua_main_conf_t  *lmcf;
     ngx_http_lua_loc_conf_t   *llcf;
 
@@ -279,9 +281,10 @@ ngx_http_lua_run_file(ngx_http_request_t *r, ngx_http_lua_ctx_t *ctx)
     }
 
     if (rc != LUA_OK) {
+        error = ngx_http_lua_error_message(co);
         ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
-                      "lua_web_file \"%V\" failed: %s",
-                      &llcf->lua_web_file, lua_tostring(co, -1));
+                      "lua_web_file \"%V\" failed: %V",
+                      &llcf->lua_web_file, &error);
         return NULL;
     }
 
@@ -383,6 +386,7 @@ ngx_http_lua_resume_request(ngx_http_request_t *r, int nargs)
     ngx_http_lua_ctx_t       *ctx;
     ngx_lua_ctx_t            *lctx;
     ngx_lua_web_response_t   *response;
+    ngx_str_t                 error;
     ngx_http_lua_loc_conf_t  *llcf;
 
     ctx = ngx_http_get_module_ctx(r, ngx_http_lua_module);
@@ -409,11 +413,38 @@ ngx_http_lua_resume_request(ngx_http_request_t *r, int nargs)
         return NGX_AGAIN;
     }
 
+    error = ngx_http_lua_error_message(ctx->co);
     ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,
-                  "lua_web_file \"%V\" route handler failed: %s",
-                  &llcf->lua_web_file, lua_tostring(ctx->co, -1));
+                  "lua_web_file \"%V\" route handler failed: %V",
+                  &llcf->lua_web_file, &error);
 
     return NGX_HTTP_INTERNAL_SERVER_ERROR;
+}
+
+
+static ngx_str_t
+ngx_http_lua_error_message(lua_State *L)
+{
+    size_t       len;
+    const char  *message;
+    ngx_str_t    error;
+
+    message = lua_tolstring(L, -1, &len);
+    if (message != NULL) {
+        error.data = (u_char *) message;
+        error.len = len;
+        return error;
+    }
+
+    message = lua_typename(L, lua_type(L, -1));
+    if (message == NULL) {
+        message = "unknown Lua error";
+    }
+
+    error.data = (u_char *) message;
+    error.len = ngx_strlen(message);
+
+    return error;
 }
 
 

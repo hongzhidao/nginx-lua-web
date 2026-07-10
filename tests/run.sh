@@ -319,6 +319,21 @@ end)
 return app
 EOF
 
+cat > "$TEST_ROOT/app-request-headers.lua" <<'EOF'
+local app = App.new()
+
+app:all("*", function(request)
+    return Response.json({
+        authorization = request.headers:get("authorization"),
+        cookie = request.headers:get("COOKIE"),
+        content_type = request.headers:get("cOnTeNt-TyPe"),
+        custom = request.headers:get("X-Incoming-Test"),
+    })
+end)
+
+return app
+EOF
+
 cat > "$TEST_ROOT/app-request-new.lua" <<'EOF'
 local function text_stream(text)
     return ReadableStream.new({
@@ -2386,6 +2401,20 @@ end)
 return app
 EOF
 
+cat > "$TEST_ROOT/app-non-string-error.lua" <<'EOF'
+error({ source = "file" })
+EOF
+
+cat > "$TEST_ROOT/app-non-string-handler-error.lua" <<'EOF'
+local app = App.new()
+
+app:all("*", function()
+    error({ source = "handler" })
+end)
+
+return app
+EOF
+
 cat > "$TEST_ROOT/conf/nginx.conf" <<EOF
 worker_processes  1;
 error_log  logs/error.log notice;
@@ -2409,6 +2438,10 @@ http {
 
         location /lua-request-url {
             lua_web_file $TEST_ROOT/app-request-url.lua;
+        }
+
+        location /lua-request-headers {
+            lua_web_file $TEST_ROOT/app-request-headers.lua;
         }
 
         location /lua-request-new {
@@ -2505,6 +2538,14 @@ http {
 
         location /lua-vm-read {
             lua_web_file $TEST_ROOT/app-vm-read.lua;
+        }
+
+        location /lua-non-string-file-error {
+            lua_web_file $TEST_ROOT/app-non-string-error.lua;
+        }
+
+        location /lua-non-string-handler-error {
+            lua_web_file $TEST_ROOT/app-non-string-handler-error.lua;
         }
 
         location /lua-subrequest-mirror {
