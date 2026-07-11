@@ -17,11 +17,21 @@
     "ngx_lua_web.ReadableStreamDefaultReader"
 
 
+typedef struct ngx_lua_web_stream_chunk_s  ngx_lua_web_stream_chunk_t;
+
+
+struct ngx_lua_web_stream_chunk_s {
+    ngx_chain_t                 *bufs;
+    ngx_lua_web_stream_chunk_t  *next;
+};
+
+
 struct ngx_lua_web_stream_s {
     ngx_lua_web_stream_source_t  *source;
     ngx_pool_t                   *pool;
-    ngx_chain_t                  *bufs;
-    ngx_chain_t                 **last;
+    ngx_lua_web_stream_chunk_t   *chunks;
+    ngx_lua_web_stream_chunk_t  **last_chunk;
+    ngx_lua_web_stream_chunk_t   *free_chunks;
     ngx_lua_web_stream_wake_pt    wake;
     void                         *data;
     unsigned  closed:1;
@@ -99,10 +109,12 @@ static const luaL_Reg  ngx_lua_web_stream_reader_methods[] = {
 static void ngx_lua_web_stream_register_metatable(lua_State *L);
 static void ngx_lua_web_stream_controller_register_metatable(lua_State *L);
 static void ngx_lua_web_stream_reader_register_metatable(lua_State *L);
-static ngx_int_t ngx_lua_web_stream_read_buffered(
-    ngx_lua_web_stream_t *stream, ngx_pool_t *pool, ngx_str_t *value);
-static ngx_int_t ngx_lua_web_stream_read_buffer(
-    ngx_lua_web_stream_t *stream, ngx_pool_t *pool, ngx_str_t *value);
+static ngx_int_t ngx_lua_web_stream_dequeue_buffered_chunk(
+    ngx_lua_web_stream_t *stream, ngx_chain_t **bufs);
+static ngx_int_t ngx_lua_web_stream_push_lua_chunk(lua_State *L,
+    ngx_lua_web_stream_t *stream, ngx_chain_t *cl);
+static void ngx_lua_web_stream_free_chunk(ngx_lua_web_stream_t *stream,
+    ngx_chain_t *cl);
 static int ngx_lua_web_stream_read_all(lua_State *L,
     ngx_lua_web_stream_t *stream, lua_KFunction continuation,
     ngx_uint_t parse_json);
@@ -112,8 +124,6 @@ static int ngx_lua_web_stream_read_text_continue(lua_State *L, int status,
     lua_KContext ctx);
 static int ngx_lua_web_stream_read_json_continue(lua_State *L, int status,
     lua_KContext ctx);
-static void ngx_lua_web_stream_pop_buf(ngx_lua_web_stream_t *stream,
-    ngx_pool_t *pool);
 
 
 /* Lua metatables. */
@@ -181,7 +191,7 @@ ngx_lua_web_stream_create(lua_State *L, ngx_pool_t *pool)
 
     ngx_memzero(stream, sizeof(ngx_lua_web_stream_t));
     stream->pool = pool;
-    stream->last = &stream->bufs;
+    stream->last_chunk = &stream->chunks;
 
     luaL_setmetatable(L, NGX_LUA_WEB_STREAM_METATABLE);
 
@@ -275,100 +285,126 @@ ngx_lua_web_stream_set_source(ngx_lua_web_stream_t *stream,
 }
 
 
-void
-ngx_lua_web_stream_enqueue_bufs(ngx_lua_web_stream_t *stream,
+ngx_int_t
+ngx_lua_web_stream_enqueue_chunk(ngx_lua_web_stream_t *stream,
     ngx_chain_t *bufs)
 {
-    *stream->last = bufs;
+    ngx_lua_web_stream_chunk_t  *chunk;
 
-    while (*stream->last) {
-        stream->last = &(*stream->last)->next;
-    }
-}
-
-
-ngx_int_t
-ngx_lua_web_stream_enqueue_string(ngx_lua_web_stream_t *stream,
-    ngx_pool_t *pool, u_char *data, size_t len)
-{
-    ngx_buf_t    *b;
-    ngx_chain_t  *cl;
-
-    if (len == 0) {
+    if (bufs == NULL) {
         return NGX_OK;
     }
 
-    cl = ngx_alloc_chain_link(pool);
-    if (cl == NULL) {
+    if (stream->closed || stream->errored) {
         return NGX_ERROR;
     }
 
-    b = ngx_create_temp_buf(pool, len);
-    if (b == NULL) {
-        ngx_free_chain(pool, cl);
-        return NGX_ERROR;
+    chunk = stream->free_chunks;
+
+    if (chunk != NULL) {
+        stream->free_chunks = chunk->next;
+
+    } else {
+        chunk = ngx_palloc(stream->pool,
+                           sizeof(ngx_lua_web_stream_chunk_t));
+        if (chunk == NULL) {
+            return NGX_ERROR;
+        }
     }
 
-    ngx_memcpy(b->last, data, len);
-    b->last += len;
+    chunk->bufs = bufs;
+    chunk->next = NULL;
 
-    cl->buf = b;
-    cl->next = NULL;
-
-    ngx_lua_web_stream_enqueue_bufs(stream, cl);
+    *stream->last_chunk = chunk;
+    stream->last_chunk = &chunk->next;
 
     return NGX_OK;
 }
 
 
 ngx_int_t
-ngx_lua_web_stream_read(ngx_lua_web_stream_t *stream, ngx_pool_t *pool,
-    ngx_str_t *value)
+ngx_lua_web_stream_dequeue_chunk(ngx_lua_web_stream_t *stream,
+    ngx_chain_t **bufs)
 {
-    ngx_int_t     rc;
+    ngx_int_t  pull_rc, rc;
 
-    value->data = NULL;
-    value->len = 0;
+    *bufs = NULL;
     stream->body_used = 1;
 
-    rc = ngx_lua_web_stream_read_buffered(stream, pool, value);
-    if (rc != NGX_AGAIN) {
+    /* Deliver queued chunks before reporting a terminal stream state. */
+    rc = ngx_lua_web_stream_dequeue_buffered_chunk(stream, bufs);
+    if (rc == NGX_OK) {
         return rc;
     }
-
-    if (stream->source == NULL) {
-        return NGX_DONE;
-    }
-
-    rc = stream->source->pull(stream, stream->source);
-    if (rc != NGX_OK) {
-        return rc;
-    }
-
-    return ngx_lua_web_stream_read_buffered(stream, pool, value);
-}
-
-
-static ngx_int_t
-ngx_lua_web_stream_read_buffered(ngx_lua_web_stream_t *stream,
-    ngx_pool_t *pool, ngx_str_t *value)
-{
-    ngx_int_t     rc;
 
     if (stream->errored) {
         return NGX_ERROR;
-    }
-
-    rc = ngx_lua_web_stream_read_buffer(stream, pool, value);
-    if (rc != NGX_AGAIN) {
-        return rc;
     }
 
     if (stream->closed) {
         return NGX_DONE;
     }
 
-    return NGX_AGAIN;
+    if (stream->source == NULL) {
+        return NGX_DONE;
+    }
+
+    pull_rc = stream->source->pull(stream, stream->source);
+
+    if (pull_rc == NGX_ERROR) {
+        stream->errored = 1;
+
+    } else if (pull_rc == NGX_DONE) {
+        stream->closed = 1;
+    }
+
+    rc = ngx_lua_web_stream_dequeue_buffered_chunk(stream, bufs);
+    if (rc == NGX_OK) {
+        return rc;
+    }
+
+    if (stream->errored) {
+        return NGX_ERROR;
+    }
+
+    if (stream->closed) {
+        return NGX_DONE;
+    }
+
+    return pull_rc == NGX_OK ? NGX_AGAIN : pull_rc;
+}
+
+
+static ngx_int_t
+ngx_lua_web_stream_dequeue_buffered_chunk(ngx_lua_web_stream_t *stream,
+    ngx_chain_t **bufs)
+{
+    ngx_chain_t                 *cl;
+    ngx_lua_web_stream_chunk_t  *chunk;
+
+    chunk = stream->chunks;
+    if (chunk == NULL) {
+        return NGX_AGAIN;
+    }
+
+    stream->chunks = chunk->next;
+
+    if (stream->chunks == NULL) {
+        stream->last_chunk = &stream->chunks;
+    }
+
+    *bufs = chunk->bufs;
+    chunk->bufs = NULL;
+    chunk->next = stream->free_chunks;
+    stream->free_chunks = chunk;
+
+    for (cl = *bufs; cl != NULL; cl = cl->next) {
+        if (cl->buf != NULL && cl->buf->last_buf) {
+            stream->closed = 1;
+        }
+    }
+
+    return NGX_OK;
 }
 
 
@@ -550,7 +586,7 @@ ngx_lua_web_stream_lua_source_pull(ngx_lua_web_stream_t *stream,
         return NGX_ERROR;
     }
 
-    if (stream->bufs == NULL && !stream->closed && !stream->errored) {
+    if (stream->chunks == NULL && !stream->closed && !stream->errored) {
         return NGX_AGAIN;
     }
 
@@ -580,9 +616,10 @@ ngx_lua_web_stream_lua_source_cleanup(void *data)
 static int
 ngx_lua_web_stream_controller_enqueue(lua_State *L)
 {
-    ngx_int_t                         rc;
     size_t                            len;
     const char                       *data;
+    ngx_buf_t                        *b;
+    ngx_chain_t                      *cl;
     ngx_lua_web_stream_t             *stream;
     ngx_lua_web_stream_controller_t  *controller;
 
@@ -610,9 +647,25 @@ ngx_lua_web_stream_controller_enqueue(lua_State *L)
         return 0;
     }
 
-    rc = ngx_lua_web_stream_enqueue_string(stream, stream->pool,
-                                           (u_char *) data, len);
-    if (rc != NGX_OK) {
+    cl = ngx_alloc_chain_link(stream->pool);
+    if (cl == NULL) {
+        return luaL_error(L, "no memory");
+    }
+
+    b = ngx_create_temp_buf(stream->pool, len);
+    if (b == NULL) {
+        ngx_free_chain(stream->pool, cl);
+        return luaL_error(L, "no memory");
+    }
+
+    ngx_memcpy(b->last, data, len);
+    b->last += len;
+
+    cl->buf = b;
+    cl->next = NULL;
+
+    if (ngx_lua_web_stream_enqueue_chunk(stream, cl) != NGX_OK) {
+        ngx_free_chain(stream->pool, cl);
         return luaL_error(L, "no memory");
     }
 
@@ -743,11 +796,11 @@ ngx_lua_web_stream_get_reader(lua_State *L)
 static int
 ngx_lua_web_stream_reader_read(lua_State *L)
 {
-    ngx_int_t                      rc;
+    ngx_int_t                      push_rc, rc;
+    ngx_chain_t                   *cl;
     ngx_lua_ctx_t                 *ctx;
     ngx_lua_web_stream_t          *stream;
     ngx_lua_web_stream_reader_t  *reader;
-    ngx_str_t                      value;
 
     if (lua_gettop(L) != 1) {
         return luaL_error(L,
@@ -758,32 +811,46 @@ ngx_lua_web_stream_reader_read(lua_State *L)
     reader = luaL_checkudata(L, 1, NGX_LUA_WEB_STREAM_READER_METATABLE);
     stream = ngx_lua_web_stream_reader_check_stream(L, reader);
 
-    rc = ngx_lua_web_stream_read(stream, stream->pool, &value);
+    for ( ;; ) {
+        rc = ngx_lua_web_stream_dequeue_chunk(stream, &cl);
 
-    if (rc == NGX_OK) {
-        lua_createtable(L, 0, 2);
-        lua_pushboolean(L, 0);
-        lua_setfield(L, -2, "done");
-        lua_pushlstring(L, (const char *) value.data, value.len);
-        lua_setfield(L, -2, "value");
-        return 1;
+        if (rc == NGX_OK) {
+            lua_createtable(L, 0, 2);
+            lua_pushboolean(L, 0);
+            lua_setfield(L, -2, "done");
+
+            push_rc = ngx_lua_web_stream_push_lua_chunk(L, stream, cl);
+            if (push_rc == NGX_DECLINED) {
+                lua_pop(L, 1);
+                continue;
+            }
+
+            if (push_rc != NGX_OK) {
+                return luaL_error(L, "ReadableStream read failed");
+            }
+
+            lua_setfield(L, -2, "value");
+            return 1;
+        }
+
+        if (rc == NGX_DONE) {
+            lua_createtable(L, 0, 1);
+            lua_pushboolean(L, 1);
+            lua_setfield(L, -2, "done");
+            return 1;
+        }
+
+        if (rc == NGX_AGAIN) {
+            ctx = ngx_lua_get_ctx(L);
+            ngx_lua_web_stream_wait(stream, ngx_lua_web_stream_reader_wake,
+                                    ctx);
+
+            return lua_yieldk(L, 0, 0,
+                              ngx_lua_web_stream_reader_continue);
+        }
+
+        return luaL_error(L, "ReadableStream read failed");
     }
-
-    if (rc == NGX_DONE) {
-        lua_createtable(L, 0, 1);
-        lua_pushboolean(L, 1);
-        lua_setfield(L, -2, "done");
-        return 1;
-    }
-
-    if (rc == NGX_AGAIN) {
-        ctx = ngx_lua_get_ctx(L);
-        ngx_lua_web_stream_wait(stream, ngx_lua_web_stream_reader_wake, ctx);
-
-        return lua_yieldk(L, 0, 0, ngx_lua_web_stream_reader_continue);
-    }
-
-    return luaL_error(L, "ReadableStream read failed");
 }
 
 
@@ -791,34 +858,41 @@ static int
 ngx_lua_web_stream_reader_continue(lua_State *L, int status,
     lua_KContext ctx)
 {
-    ngx_int_t                      rc;
+    ngx_int_t                      push_rc, rc;
+    ngx_chain_t                   *cl;
     ngx_lua_web_stream_t          *stream;
     ngx_lua_web_stream_reader_t  *reader;
-    ngx_str_t                      value;
 
     reader = luaL_checkudata(L, 1, NGX_LUA_WEB_STREAM_READER_METATABLE);
     stream = ngx_lua_web_stream_reader_check_stream(L, reader);
 
-    if (stream->errored) {
-        return luaL_error(L, "ReadableStream read failed");
-    }
+    for ( ;; ) {
+        rc = ngx_lua_web_stream_dequeue_buffered_chunk(stream, &cl);
 
-    value.data = NULL;
-    value.len = 0;
+        if (rc != NGX_OK) {
+            break;
+        }
 
-    rc = ngx_lua_web_stream_read_buffer(stream, stream->pool, &value);
-
-    if (rc == NGX_ERROR) {
-        return luaL_error(L, "ReadableStream read failed");
-    }
-
-    if (rc == NGX_OK) {
         lua_createtable(L, 0, 2);
         lua_pushboolean(L, 0);
         lua_setfield(L, -2, "done");
-        lua_pushlstring(L, (const char *) value.data, value.len);
+
+        push_rc = ngx_lua_web_stream_push_lua_chunk(L, stream, cl);
+        if (push_rc == NGX_DECLINED) {
+            lua_pop(L, 1);
+            continue;
+        }
+
+        if (push_rc != NGX_OK) {
+            return luaL_error(L, "ReadableStream read failed");
+        }
+
         lua_setfield(L, -2, "value");
         return 1;
+    }
+
+    if (stream->errored) {
+        return luaL_error(L, "ReadableStream read failed");
     }
 
     if (stream->closed) {
@@ -913,15 +987,24 @@ ngx_lua_web_stream_read_all(lua_State *L, ngx_lua_web_stream_t *stream,
 {
     lua_Unsigned    n;
     ngx_int_t       rc;
-    ngx_str_t       value;
+    ngx_chain_t    *cl;
     ngx_lua_ctx_t  *ctx;
 
     for ( ;; ) {
-        rc = ngx_lua_web_stream_read(stream, stream->pool, &value);
+        rc = ngx_lua_web_stream_dequeue_chunk(stream, &cl);
 
         if (rc == NGX_OK) {
             n = lua_rawlen(L, 2);
-            lua_pushlstring(L, (const char *) value.data, value.len);
+
+            rc = ngx_lua_web_stream_push_lua_chunk(L, stream, cl);
+            if (rc == NGX_DECLINED) {
+                continue;
+            }
+
+            if (rc != NGX_OK) {
+                return luaL_error(L, "ReadableStream read failed");
+            }
+
             lua_rawseti(L, 2, (lua_Integer) n + 1);
             continue;
         }
@@ -1010,64 +1093,77 @@ ngx_lua_web_stream_read_json_continue(lua_State *L, int status,
 /* Buffer helpers. */
 
 static ngx_int_t
-ngx_lua_web_stream_read_buffer(ngx_lua_web_stream_t *stream,
-    ngx_pool_t *pool, ngx_str_t *value)
+ngx_lua_web_stream_push_lua_chunk(lua_State *L,
+    ngx_lua_web_stream_t *stream, ngx_chain_t *cl)
 {
-    ngx_buf_t    *b;
+    off_t          size;
+    ngx_uint_t     has_data;
+    ngx_buf_t     *b;
+    ngx_chain_t   *next, *part;
+    luaL_Buffer    buffer;
 
-    while (stream->bufs) {
-        b = stream->bufs->buf;
+    has_data = 0;
 
-        if (ngx_buf_special(b)) {
-            if (b->last_buf) {
-                stream->closed = 1;
-            }
+    for (part = cl; part != NULL; part = part->next) {
+        b = part->buf;
 
-            ngx_lua_web_stream_pop_buf(stream, pool);
-            continue;
-        }
-
-        if (!ngx_buf_in_memory(b)) {
+        if (b == NULL) {
             stream->errored = 1;
+            ngx_lua_web_stream_free_chunk(stream, cl);
             return NGX_ERROR;
         }
 
-        if (b->pos < b->last) {
-            value->data = b->pos;
-            value->len = b->last - b->pos;
-            b->pos = b->last;
-
-            if (b->last_buf) {
-                stream->closed = 1;
-            }
-
-            ngx_lua_web_stream_pop_buf(stream, pool);
-
-            return NGX_OK;
+        if (ngx_buf_special(b)) {
+            continue;
         }
 
-        if (b->last_buf) {
-            stream->closed = 1;
+        size = ngx_buf_size(b);
+
+        if (size < 0 || (size > 0 && !ngx_buf_in_memory(b))) {
+            stream->errored = 1;
+            ngx_lua_web_stream_free_chunk(stream, cl);
+            return NGX_ERROR;
         }
 
-        ngx_lua_web_stream_pop_buf(stream, pool);
+        if (size > 0) {
+            has_data = 1;
+        }
     }
 
-    return NGX_AGAIN;
+    if (!has_data) {
+        ngx_lua_web_stream_free_chunk(stream, cl);
+        return NGX_DECLINED;
+    }
+
+    luaL_buffinit(L, &buffer);
+
+    for (part = cl; part != NULL; part = next) {
+        next = part->next;
+        b = part->buf;
+
+        if (!ngx_buf_special(b) && ngx_buf_size(b) > 0) {
+            luaL_addlstring(&buffer, (const char *) b->pos,
+                            b->last - b->pos);
+            b->pos = b->last;
+        }
+
+        ngx_free_chain(stream->pool, part);
+    }
+
+    luaL_pushresult(&buffer);
+
+    return NGX_OK;
 }
 
 
 static void
-ngx_lua_web_stream_pop_buf(ngx_lua_web_stream_t *stream, ngx_pool_t *pool)
+ngx_lua_web_stream_free_chunk(ngx_lua_web_stream_t *stream, ngx_chain_t *cl)
 {
-    ngx_chain_t  *cl;
+    ngx_chain_t  *next;
 
-    cl = stream->bufs;
-    stream->bufs = cl->next;
-
-    if (stream->bufs == NULL) {
-        stream->last = &stream->bufs;
+    while (cl != NULL) {
+        next = cl->next;
+        ngx_free_chain(stream->pool, cl);
+        cl = next;
     }
-
-    ngx_free_chain(pool, cl);
 }

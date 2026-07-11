@@ -74,6 +74,12 @@ struct ngx_http_lua_fetch_s {
     in_port_t                   port;
     ngx_str_t                   peer_name;
     ngx_buf_t                  *write_buf;
+    ngx_chain_t                *write_chain;
+    ngx_chain_t                *body_chain;
+    ngx_buf_t                   body_header_buf;
+    ngx_buf_t                   body_trailer_buf;
+    u_char                      body_header[
+                                    sizeof("0000000000000000" CRLF) - 1];
     ngx_buf_t                  *read_buf;
     ngx_str_t                   error;
     ngx_msec_t                  connect_timeout;
@@ -91,6 +97,7 @@ struct ngx_http_lua_fetch_s {
 
     unsigned                    request_sent:1;
     unsigned                    request_body_sent:1;
+    unsigned                    last_body_chain:1;
     unsigned                    header_only:1;
     unsigned                    keepalive:1;
     unsigned                    ssl:1;
@@ -152,10 +159,15 @@ static void ngx_http_lua_fetch_ssl_cleanup(void *data);
 static void ngx_http_lua_fetch_send_request_handler(ngx_event_t *ev);
 static ngx_int_t ngx_http_lua_fetch_send_request(ngx_http_lua_fetch_t *fetch);
 static ngx_int_t ngx_http_lua_fetch_send_buffer(ngx_http_lua_fetch_t *fetch);
-static ngx_int_t ngx_http_lua_fetch_next_body_buffer(
+static ngx_int_t ngx_http_lua_fetch_send_chain(ngx_http_lua_fetch_t *fetch);
+static void ngx_http_lua_fetch_release_body_chain(
+    ngx_http_lua_fetch_t *fetch);
+static void ngx_http_lua_fetch_free_chain(ngx_http_lua_fetch_t *fetch,
+    ngx_chain_t *cl);
+static ngx_int_t ngx_http_lua_fetch_next_body_chunk(
     ngx_http_lua_fetch_t *fetch);
 static ngx_int_t ngx_http_lua_fetch_create_body_chunk(
-    ngx_http_lua_fetch_t *fetch, ngx_str_t *chunk);
+    ngx_http_lua_fetch_t *fetch, ngx_chain_t *chunk, off_t size);
 static ngx_int_t ngx_http_lua_fetch_create_last_body_chunk(
     ngx_http_lua_fetch_t *fetch);
 static void ngx_http_lua_fetch_request_body_wake(void *data);
@@ -631,6 +643,7 @@ ngx_http_lua_fetch_create(lua_State *L)
     fetch->keepalive_timeout = NGX_HTTP_LUA_FETCH_KEEPALIVE_TIMEOUT;
     fetch->request_sent = 0;
     fetch->request_body_sent = 0;
+    fetch->last_body_chain = 0;
     fetch->keepalive = 1;
     fetch->ssl = 0;
     fetch->has_target = 0;
@@ -1639,16 +1652,27 @@ ngx_http_lua_fetch_send_request(ngx_http_lua_fetch_t *fetch)
     }
 
     for ( ;; ) {
-        rc = ngx_http_lua_fetch_send_buffer(fetch);
-        if (rc != NGX_OK) {
-            return rc;
+        if (fetch->write_buf != NULL) {
+            rc = ngx_http_lua_fetch_send_buffer(fetch);
+            if (rc != NGX_OK) {
+                return rc;
+            }
+
+            fetch->write_buf = NULL;
+        }
+
+        if (fetch->body_chain != NULL) {
+            rc = ngx_http_lua_fetch_send_chain(fetch);
+            if (rc != NGX_OK) {
+                return rc;
+            }
         }
 
         if (fetch->request->body == NULL || fetch->request_body_sent) {
             break;
         }
 
-        rc = ngx_http_lua_fetch_next_body_buffer(fetch);
+        rc = ngx_http_lua_fetch_next_body_chunk(fetch);
         if (rc != NGX_OK) {
             return rc;
         }
@@ -1724,53 +1748,221 @@ ngx_http_lua_fetch_send_buffer(ngx_http_lua_fetch_t *fetch)
 
 
 static ngx_int_t
-ngx_http_lua_fetch_next_body_buffer(ngx_http_lua_fetch_t *fetch)
+ngx_http_lua_fetch_send_chain(ngx_http_lua_fetch_t *fetch)
 {
-    ngx_int_t  rc;
-    ngx_str_t  chunk;
+    ngx_uint_t         last;
+    ngx_chain_t       *out;
+    ngx_connection_t  *c;
 
-    rc = ngx_lua_web_stream_read(fetch->request->body, fetch->pool, &chunk);
+    c = fetch->peer.connection;
 
-    if (rc == NGX_OK) {
-        return ngx_http_lua_fetch_create_body_chunk(fetch, &chunk);
+    out = c->send_chain(c, fetch->write_chain, 0);
+    if (out == NGX_CHAIN_ERROR) {
+        ngx_http_lua_fetch_fail(fetch, "fetch request body send failed");
+        return NGX_ERROR;
     }
 
-    if (rc == NGX_DONE) {
-        fetch->request_body_sent = 1;
-        return ngx_http_lua_fetch_create_last_body_chunk(fetch);
-    }
+    fetch->write_chain = out;
 
-    if (rc == NGX_AGAIN) {
-        ngx_lua_web_stream_wait(fetch->request->body,
-                                ngx_http_lua_fetch_request_body_wake, fetch);
+    if (out != NULL || c->buffered) {
+        ngx_add_timer(c->write, fetch->send_timeout);
+
+        if (ngx_handle_write_event(c->write, 0) != NGX_OK) {
+            ngx_http_lua_fetch_fail(fetch,
+                                    "fetch request body send failed");
+            return NGX_ERROR;
+        }
+
         return NGX_AGAIN;
     }
 
-    ngx_http_lua_fetch_fail(fetch, "fetch request body read failed");
+    if (c->write->timer_set) {
+        ngx_del_timer(c->write);
+    }
 
-    return NGX_ERROR;
+    last = fetch->last_body_chain;
+    ngx_http_lua_fetch_release_body_chain(fetch);
+
+    if (last) {
+        fetch->request_body_sent = 1;
+        fetch->last_body_chain = 0;
+    }
+
+    return NGX_OK;
+}
+
+
+static void
+ngx_http_lua_fetch_release_body_chain(ngx_http_lua_fetch_t *fetch)
+{
+    ngx_http_lua_fetch_free_chain(fetch, fetch->body_chain);
+
+    fetch->body_chain = NULL;
+    fetch->write_chain = NULL;
+}
+
+
+static void
+ngx_http_lua_fetch_free_chain(ngx_http_lua_fetch_t *fetch, ngx_chain_t *cl)
+{
+    ngx_chain_t  *next;
+
+    while (cl != NULL) {
+        next = cl->next;
+        ngx_free_chain(fetch->pool, cl);
+        cl = next;
+    }
+}
+
+
+static ngx_int_t
+ngx_http_lua_fetch_next_body_chunk(ngx_http_lua_fetch_t *fetch)
+{
+    off_t         buf_size, size;
+    ngx_buf_t    *b;
+    ngx_int_t     rc;
+    ngx_chain_t  *chunk, *cl, *next, **last;
+
+    for ( ;; ) {
+        chunk = NULL;
+        rc = ngx_lua_web_stream_dequeue_chunk(fetch->request->body, &chunk);
+
+        if (rc == NGX_OK) {
+            if (chunk == NULL) {
+                ngx_http_lua_fetch_fail(fetch,
+                                        "fetch request body read failed");
+                return NGX_ERROR;
+            }
+
+            size = 0;
+
+            for (cl = chunk; cl != NULL; cl = cl->next) {
+                b = cl->buf;
+
+                if (b == NULL) {
+                    ngx_http_lua_fetch_free_chain(fetch, chunk);
+                    ngx_http_lua_fetch_fail(
+                        fetch, "fetch request body read failed");
+                    return NGX_ERROR;
+                }
+
+                if (ngx_buf_special(b)) {
+                    continue;
+                }
+
+                buf_size = ngx_buf_size(b);
+
+                if (buf_size < 0
+                    || (buf_size > 0 && !ngx_buf_in_memory(b))
+                    || buf_size > NGX_MAX_OFF_T_VALUE - size)
+                {
+                    ngx_http_lua_fetch_free_chain(fetch, chunk);
+                    ngx_http_lua_fetch_fail(
+                        fetch, "fetch request body read failed");
+                    return NGX_ERROR;
+                }
+
+                size += buf_size;
+            }
+
+            if (size == 0) {
+                ngx_http_lua_fetch_free_chain(fetch, chunk);
+                continue;
+            }
+
+            cl = chunk;
+            chunk = NULL;
+            last = &chunk;
+
+            while (cl != NULL) {
+                next = cl->next;
+                cl->next = NULL;
+                b = cl->buf;
+
+                if (ngx_buf_special(b) || ngx_buf_size(b) == 0) {
+                    ngx_free_chain(fetch->pool, cl);
+
+                } else {
+                    *last = cl;
+                    last = &cl->next;
+                }
+
+                cl = next;
+            }
+
+            return ngx_http_lua_fetch_create_body_chunk(fetch, chunk, size);
+        }
+
+        if (rc == NGX_DONE) {
+            return ngx_http_lua_fetch_create_last_body_chunk(fetch);
+        }
+
+        if (rc == NGX_AGAIN) {
+            ngx_lua_web_stream_wait(fetch->request->body,
+                                    ngx_http_lua_fetch_request_body_wake,
+                                    fetch);
+            return NGX_AGAIN;
+        }
+
+        ngx_http_lua_fetch_fail(fetch, "fetch request body read failed");
+
+        return NGX_ERROR;
+    }
 }
 
 
 static ngx_int_t
 ngx_http_lua_fetch_create_body_chunk(ngx_http_lua_fetch_t *fetch,
-    ngx_str_t *chunk)
+    ngx_chain_t *chunk, off_t size)
 {
-    ngx_buf_t  *b;
+    ngx_buf_t    *b;
+    ngx_chain_t  *header, *last, *trailer;
 
-    b = ngx_create_temp_buf(fetch->pool,
-                            NGX_SIZE_T_LEN + sizeof(CRLF) - 1
-                            + chunk->len + sizeof(CRLF) - 1);
-    if (b == NULL) {
+    header = ngx_alloc_chain_link(fetch->pool);
+    if (header == NULL) {
+        ngx_http_lua_fetch_free_chain(fetch, chunk);
         ngx_http_lua_fetch_fail(fetch, "fetch request body send failed");
         return NGX_ERROR;
     }
 
-    b->last = ngx_sprintf(b->last, "%xz" CRLF, chunk->len);
-    b->last = ngx_cpymem(b->last, chunk->data, chunk->len);
-    b->last = ngx_cpymem(b->last, CRLF, sizeof(CRLF) - 1);
+    trailer = ngx_alloc_chain_link(fetch->pool);
+    if (trailer == NULL) {
+        ngx_free_chain(fetch->pool, header);
+        ngx_http_lua_fetch_free_chain(fetch, chunk);
+        ngx_http_lua_fetch_fail(fetch, "fetch request body send failed");
+        return NGX_ERROR;
+    }
 
-    fetch->write_buf = b;
+    b = &fetch->body_header_buf;
+    ngx_memzero(b, sizeof(ngx_buf_t));
+    b->start = fetch->body_header;
+    b->pos = b->start;
+    b->last = ngx_sprintf(b->start, "%xO" CRLF, size);
+    b->end = b->start + sizeof(fetch->body_header);
+    b->temporary = 1;
+
+    header->buf = b;
+    header->next = chunk;
+
+    b = &fetch->body_trailer_buf;
+    ngx_memzero(b, sizeof(ngx_buf_t));
+    b->pos = (u_char *) CRLF;
+    b->last = b->pos + sizeof(CRLF) - 1;
+    b->memory = 1;
+    b->flush = 1;
+
+    last = chunk;
+
+    while (last->next != NULL) {
+        last = last->next;
+    }
+
+    last->next = trailer;
+    trailer->buf = b;
+    trailer->next = NULL;
+
+    fetch->body_chain = header;
+    fetch->write_chain = header;
 
     return NGX_OK;
 }
@@ -1779,18 +1971,28 @@ ngx_http_lua_fetch_create_body_chunk(ngx_http_lua_fetch_t *fetch,
 static ngx_int_t
 ngx_http_lua_fetch_create_last_body_chunk(ngx_http_lua_fetch_t *fetch)
 {
-    ngx_buf_t  *b;
+    ngx_buf_t    *b;
+    ngx_chain_t  *cl;
 
-    b = ngx_create_temp_buf(fetch->pool, sizeof("0" CRLF CRLF) - 1);
-    if (b == NULL) {
+    cl = ngx_alloc_chain_link(fetch->pool);
+    if (cl == NULL) {
         ngx_http_lua_fetch_fail(fetch, "fetch request body send failed");
         return NGX_ERROR;
     }
 
-    b->last = ngx_cpymem(b->last, "0" CRLF CRLF,
-                         sizeof("0" CRLF CRLF) - 1);
+    b = &fetch->body_trailer_buf;
+    ngx_memzero(b, sizeof(ngx_buf_t));
+    b->pos = (u_char *) "0" CRLF CRLF;
+    b->last = b->pos + sizeof("0" CRLF CRLF) - 1;
+    b->memory = 1;
+    b->flush = 1;
 
-    fetch->write_buf = b;
+    cl->buf = b;
+    cl->next = NULL;
+
+    fetch->body_chain = cl;
+    fetch->write_chain = cl;
+    fetch->last_body_chain = 1;
 
     return NGX_OK;
 }
@@ -2520,7 +2722,10 @@ ngx_http_lua_fetch_enqueue_body_buffer(ngx_http_lua_fetch_t *fetch,
     cl->buf = b;
     cl->next = NULL;
 
-    ngx_lua_web_stream_enqueue_bufs(stream, cl);
+    if (ngx_lua_web_stream_enqueue_chunk(stream, cl) != NGX_OK) {
+        ngx_free_chain(fetch->pool, cl);
+        return NGX_ERROR;
+    }
 
     return NGX_OK;
 }
@@ -2572,6 +2777,7 @@ ngx_http_lua_fetch_fail(ngx_http_lua_fetch_t *fetch, const char *message)
     fetch->error.data = (u_char *) message;
     fetch->error.len = ngx_strlen(message);
     ngx_http_lua_fetch_free_peer(fetch, 0);
+    ngx_http_lua_fetch_release_body_chain(fetch);
 }
 
 
@@ -3043,6 +3249,7 @@ ngx_http_lua_fetch_cleanup(void *data)
     }
 
     ngx_http_lua_fetch_free_peer(fetch, 0);
+    ngx_http_lua_fetch_release_body_chain(fetch);
 
     if (fetch->request_ref != LUA_NOREF) {
         luaL_unref(fetch->ctx->thread, LUA_REGISTRYINDEX,

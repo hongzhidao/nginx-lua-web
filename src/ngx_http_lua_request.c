@@ -302,7 +302,12 @@ ngx_http_lua_request_body_read(ngx_http_request_t *r,
     ngx_int_t  rc;
 
     if (r->request_body->bufs != NULL) {
-        ngx_lua_web_stream_enqueue_bufs(stream, r->request_body->bufs);
+        if (ngx_lua_web_stream_enqueue_chunk(stream, r->request_body->bufs)
+            != NGX_OK)
+        {
+            return NGX_ERROR;
+        }
+
         r->request_body->bufs = NULL;
         return NGX_OK;
     }
@@ -317,7 +322,12 @@ ngx_http_lua_request_body_read(ngx_http_request_t *r,
     }
 
     if (r->request_body->bufs != NULL) {
-        ngx_lua_web_stream_enqueue_bufs(stream, r->request_body->bufs);
+        if (ngx_lua_web_stream_enqueue_chunk(stream, r->request_body->bufs)
+            != NGX_OK)
+        {
+            return NGX_ERROR;
+        }
+
         r->request_body->bufs = NULL;
         return NGX_OK;
     }

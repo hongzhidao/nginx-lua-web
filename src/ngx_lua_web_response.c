@@ -144,6 +144,8 @@ ngx_lua_web_response_json(lua_State *L)
     int                      nargs, init_index, response_index;
     size_t                   len;
     const char              *json;
+    ngx_buf_t               *b;
+    ngx_chain_t             *cl;
     ngx_lua_ctx_t           *ctx;
     ngx_lua_web_stream_t    *body;
     ngx_lua_web_response_t  *response;
@@ -197,10 +199,24 @@ ngx_lua_web_response_json(lua_State *L)
         return luaL_error(L, "no memory");
     }
 
-    if (ngx_lua_web_stream_enqueue_string(body, ctx->pool, (u_char *) json,
-                                          len)
-        != NGX_OK)
-    {
+    cl = ngx_alloc_chain_link(ctx->pool);
+    if (cl == NULL) {
+        return luaL_error(L, "no memory");
+    }
+
+    b = ngx_create_temp_buf(ctx->pool, len);
+    if (b == NULL) {
+        ngx_free_chain(ctx->pool, cl);
+        return luaL_error(L, "no memory");
+    }
+
+    b->last = ngx_cpymem(b->last, json, len);
+
+    cl->buf = b;
+    cl->next = NULL;
+
+    if (ngx_lua_web_stream_enqueue_chunk(body, cl) != NGX_OK) {
+        ngx_free_chain(ctx->pool, cl);
         return luaL_error(L, "no memory");
     }
 

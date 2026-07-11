@@ -7,7 +7,9 @@
 
 
 static ngx_int_t ngx_http_lua_send_response_chunk(ngx_http_request_t *r,
-    ngx_str_t *chunk);
+    ngx_chain_t *chunk);
+static void ngx_http_lua_free_response_chunk(ngx_http_request_t *r,
+    ngx_chain_t *chunk);
 static ngx_int_t ngx_http_lua_set_response_headers(ngx_http_request_t *r,
     ngx_lua_web_response_t *response);
 static ngx_int_t ngx_http_lua_copy_response_header(ngx_pool_t *pool,
@@ -22,8 +24,8 @@ ngx_int_t
 ngx_http_lua_send_response(ngx_http_request_t *r,
     ngx_lua_web_response_t *response)
 {
+    ngx_chain_t          *cl;
     ngx_int_t             rc;
-    ngx_str_t             chunk;
     ngx_lua_web_stream_t *stream;
 
     stream = response->body;
@@ -57,10 +59,19 @@ ngx_http_lua_send_response(ngx_http_request_t *r,
     }
 
     for ( ;; ) {
-        rc = ngx_lua_web_stream_read(stream, r->pool, &chunk);
+        cl = NULL;
+        rc = ngx_lua_web_stream_dequeue_chunk(stream, &cl);
 
         if (rc == NGX_OK) {
-            rc = ngx_http_lua_send_response_chunk(r, &chunk);
+            if (cl == NULL) {
+                return NGX_ERROR;
+            }
+
+            rc = ngx_http_lua_send_response_chunk(r, cl);
+            if (rc == NGX_DECLINED) {
+                continue;
+            }
+
             if (rc != NGX_OK) {
                 return rc;
             }
@@ -188,25 +199,86 @@ ngx_http_lua_response_header_is(ngx_str_t *name, const char *value,
 
 
 static ngx_int_t
-ngx_http_lua_send_response_chunk(ngx_http_request_t *r, ngx_str_t *chunk)
+ngx_http_lua_send_response_chunk(ngx_http_request_t *r, ngx_chain_t *chunk)
 {
-    ngx_buf_t    *b;
-    ngx_chain_t   out;
+    off_t         size;
+    ngx_buf_t    *b, *last_buf;
+    ngx_chain_t  *cl, *next, *out, **last;
+    ngx_int_t     rc;
+    ngx_uint_t    has_data;
 
-    b = ngx_calloc_buf(r->pool);
-    if (b == NULL) {
-        return NGX_ERROR;
+    has_data = 0;
+
+    for (cl = chunk; cl != NULL; cl = cl->next) {
+        b = cl->buf;
+
+        if (b == NULL) {
+            ngx_http_lua_free_response_chunk(r, chunk);
+            return NGX_ERROR;
+        }
+
+        if (ngx_buf_special(b)) {
+            continue;
+        }
+
+        size = ngx_buf_size(b);
+
+        if (size < 0 || (size > 0 && !ngx_buf_in_memory(b))) {
+            ngx_http_lua_free_response_chunk(r, chunk);
+            return NGX_ERROR;
+        }
+
+        if (size > 0) {
+            has_data = 1;
+        }
     }
 
-    b->pos = chunk->data;
-    b->last = chunk->data + chunk->len;
-    b->memory = 1;
-    b->flush = 1;
+    if (!has_data) {
+        ngx_http_lua_free_response_chunk(r, chunk);
+        return NGX_DECLINED;
+    }
 
-    out.buf = b;
-    out.next = NULL;
+    out = NULL;
+    last = &out;
+    last_buf = NULL;
 
-    return ngx_http_output_filter(r, &out);
+    for (cl = chunk; cl != NULL; cl = next) {
+        next = cl->next;
+        cl->next = NULL;
+        b = cl->buf;
+
+        if (ngx_buf_special(b) || ngx_buf_size(b) == 0) {
+            ngx_free_chain(r->pool, cl);
+            continue;
+        }
+
+        b->flush = 0;
+        b->last_buf = 0;
+        b->last_in_chain = 0;
+
+        *last = cl;
+        last = &cl->next;
+        last_buf = b;
+    }
+
+    last_buf->flush = 1;
+    rc = ngx_http_output_filter(r, out);
+    ngx_http_lua_free_response_chunk(r, out);
+
+    return rc;
+}
+
+
+static void
+ngx_http_lua_free_response_chunk(ngx_http_request_t *r, ngx_chain_t *chunk)
+{
+    ngx_chain_t  *next;
+
+    while (chunk != NULL) {
+        next = chunk->next;
+        ngx_free_chain(r->pool, chunk);
+        chunk = next;
+    }
 }
 
 

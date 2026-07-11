@@ -96,12 +96,17 @@ int ngx_lua_web_stream_read_json(lua_State *L,
 void ngx_lua_web_stream_register(lua_State *L);
 void ngx_lua_web_stream_set_source(ngx_lua_web_stream_t *stream,
     ngx_lua_web_stream_source_t *source);
-void ngx_lua_web_stream_enqueue_bufs(ngx_lua_web_stream_t *stream,
+/*
+ * Chain links must use the pool passed to stream_create(), and backing buffers
+ * must remain valid until consumed.  A successful enqueue transfers the
+ * complete chain as one logical chunk; on failure the caller retains it.  A
+ * successful dequeue transfers that complete chain to the caller, which must
+ * return every link to the same pool with ngx_free_chain().
+ */
+ngx_int_t ngx_lua_web_stream_enqueue_chunk(ngx_lua_web_stream_t *stream,
     ngx_chain_t *bufs);
-ngx_int_t ngx_lua_web_stream_enqueue_string(ngx_lua_web_stream_t *stream,
-    ngx_pool_t *pool, u_char *data, size_t len);
-ngx_int_t ngx_lua_web_stream_read(ngx_lua_web_stream_t *stream,
-    ngx_pool_t *pool, ngx_str_t *value);
+ngx_int_t ngx_lua_web_stream_dequeue_chunk(ngx_lua_web_stream_t *stream,
+    ngx_chain_t **bufs);
 void ngx_lua_web_stream_close(ngx_lua_web_stream_t *stream);
 void ngx_lua_web_stream_error(ngx_lua_web_stream_t *stream);
 void ngx_lua_web_stream_wait(ngx_lua_web_stream_t *stream,

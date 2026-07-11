@@ -112,7 +112,25 @@ while True:
 PY
 )}
 
-DNS_PORT=${DNS_PORT:-$(python3 - "$PORT" "$UPSTREAM_PORT" "$HTTPS_UPSTREAM_PORT" "$SLOW_FETCH_PORT" "$HEADER_FETCH_PORT" <<'PY'
+FETCH_UPLOAD_PORT=${FETCH_UPLOAD_PORT:-$(python3 - "$PORT" "$UPSTREAM_PORT" "$HTTPS_UPSTREAM_PORT" "$SLOW_FETCH_PORT" "$HEADER_FETCH_PORT" <<'PY'
+import socket
+import sys
+
+used = {int(arg) for arg in sys.argv[1:]}
+
+while True:
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    port = s.getsockname()[1]
+    s.close()
+
+    if port not in used:
+        print(port)
+        break
+PY
+)}
+
+DNS_PORT=${DNS_PORT:-$(python3 - "$PORT" "$UPSTREAM_PORT" "$HTTPS_UPSTREAM_PORT" "$SLOW_FETCH_PORT" "$HEADER_FETCH_PORT" "$FETCH_UPLOAD_PORT" <<'PY'
 import socket
 import sys
 
@@ -1345,7 +1363,49 @@ end
 
 local app = App.new()
 
-app:all("*", function()
+app:all("*", function(request)
+    if request.url:match("/lua%-stream%-chunks$") then
+        local chunks = ReadableStream.new({
+            start = function(controller)
+                controller:enqueue("first")
+                controller:enqueue("second")
+                controller:close()
+            end,
+        })
+        local reader = chunks:getReader()
+        local first = reader:read()
+        local second = reader:read()
+        local done = reader:read()
+
+        return Response.new({
+            status = 200,
+            body = text_stream(first.value .. ":" .. second.value .. ":"
+                               .. tostring(done.done)),
+        })
+    end
+
+    if request.url:match("/lua%-stream%-error$") then
+        local chunks = ReadableStream.new({
+            pull = function(controller)
+                controller:enqueue("before error")
+                error("source failed")
+            end,
+        })
+        local reader = chunks:getReader()
+        local first_ok, first = pcall(function()
+            return reader:read()
+        end)
+        local second_ok = pcall(function()
+            reader:read()
+        end)
+
+        return Response.new({
+            status = 200,
+            body = text_stream(tostring(first_ok) .. ":" .. first.value
+                               .. ":" .. tostring(second_ok)),
+        })
+    end
+
     if Stream ~= nil then
         return Response.new({
             status = 500,
@@ -1836,6 +1896,41 @@ EOF
 sed -i "s/__UPSTREAM_PORT__/$UPSTREAM_PORT/g" "$TEST_ROOT/app-fetch.lua"
 sed -i "s/__HTTPS_UPSTREAM_PORT__/$HTTPS_UPSTREAM_PORT/g" "$TEST_ROOT/app-fetch.lua"
 sed -i "s/__HEADER_FETCH_PORT__/$HEADER_FETCH_PORT/g" "$TEST_ROOT/app-fetch.lua"
+
+cat > "$TEST_ROOT/app-fetch-upload.lua" <<'EOF'
+local function text_stream(text)
+    return ReadableStream.new({
+        start = function(controller)
+            controller:enqueue(text)
+            controller:close()
+        end,
+    })
+end
+
+local app = App.new()
+local target = "http://127.0.0.1:__FETCH_UPLOAD_PORT__"
+
+app:all("*", function(request)
+    local response, err = fetch(request, nil, { target = target })
+
+    if response == nil then
+        return Response.new({
+            status = 500,
+            body = text_stream(err or "fetch upload failed"),
+        })
+    end
+
+    return Response.new({
+        status = response.status,
+        body = response.body,
+    })
+end)
+
+return app
+EOF
+
+sed -i "s/__FETCH_UPLOAD_PORT__/$FETCH_UPLOAD_PORT/g" \
+    "$TEST_ROOT/app-fetch-upload.lua"
 
 cat > "$TEST_ROOT/app-fetch-timeout.lua" <<'EOF'
 local function text_stream(text)
@@ -2480,6 +2575,14 @@ http {
             lua_web_file $TEST_ROOT/app-stream.lua;
         }
 
+        location /lua-stream-chunks {
+            lua_web_file $TEST_ROOT/app-stream.lua;
+        }
+
+        location /lua-stream-error {
+            lua_web_file $TEST_ROOT/app-stream.lua;
+        }
+
         location /lua-stream-pull {
             lua_web_file $TEST_ROOT/app-stream-pull.lua;
         }
@@ -2522,6 +2625,11 @@ http {
 
         location /lua-fetch-head {
             lua_web_file $TEST_ROOT/app-fetch-head.lua;
+        }
+
+        location /lua-fetch-upload {
+            client_max_body_size 64m;
+            lua_web_file $TEST_ROOT/app-fetch-upload.lua;
         }
 
         location /fetch-upstream {
@@ -2703,6 +2811,12 @@ while True:
 PY
 HEADER_FETCH_PID=$!
 
+FETCH_UPLOAD_PID=
+
+python3 "$MODULE_DIR/tests/fetch_upload_sink.py" \
+    "$FETCH_UPLOAD_PORT" "$TEST_ROOT" &
+FETCH_UPLOAD_PID=$!
+
 DNS_PID=
 
 python3 - "$DNS_PORT" <<'PY' &
@@ -2765,6 +2879,9 @@ cleanup() {
     fi
     if [ -n "$HEADER_FETCH_PID" ]; then
         kill "$HEADER_FETCH_PID" >/dev/null 2>&1 || true
+    fi
+    if [ -n "$FETCH_UPLOAD_PID" ]; then
+        kill "$FETCH_UPLOAD_PID" >/dev/null 2>&1 || true
     fi
     if [ -n "$DNS_PID" ]; then
         kill "$DNS_PID" >/dev/null 2>&1 || true
