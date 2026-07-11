@@ -17,6 +17,10 @@ static ngx_int_t ngx_http_lua_copy_response_header(ngx_pool_t *pool,
 static ngx_uint_t ngx_http_lua_response_header_is(ngx_str_t *name,
     const char *value, size_t len);
 static ngx_int_t ngx_http_lua_send_response_last(ngx_http_request_t *r);
+static ngx_uint_t ngx_http_lua_response_output_pending(
+    ngx_http_request_t *r);
+static ngx_int_t ngx_http_lua_response_wait_write(ngx_http_request_t *r);
+static void ngx_http_lua_response_write_handler(ngx_http_request_t *r);
 static void ngx_http_lua_response_stream_wake(void *data);
 
 
@@ -37,10 +41,22 @@ ngx_http_lua_send_response(ngx_http_request_t *r,
             }
 
             r->headers_out.content_length_n = 0;
-            return ngx_http_send_header(r);
+            rc = ngx_http_send_header(r);
+            if (rc != NGX_OK && rc != NGX_AGAIN) {
+                return rc;
+            }
+
+            if (rc == NGX_AGAIN
+                || ngx_http_lua_response_output_pending(r))
+            {
+                return ngx_http_lua_response_wait_write(r);
+            }
+
+            return NGX_OK;
         }
 
-        return NGX_OK;
+        return ngx_http_lua_response_output_pending(r)
+               ? ngx_http_lua_response_wait_write(r) : NGX_OK;
     }
 
     if (!r->header_sent) {
@@ -50,12 +66,22 @@ ngx_http_lua_send_response(ngx_http_request_t *r,
 
         r->headers_out.content_length_n = -1;
         rc = ngx_http_send_header(r);
-        if (rc == NGX_ERROR || rc > NGX_OK || r->header_only
-            || response->status == NGX_HTTP_NO_CONTENT
-            || response->status == NGX_HTTP_NOT_MODIFIED)
-        {
+        if (rc != NGX_OK && rc != NGX_AGAIN) {
             return rc;
         }
+
+        if (rc == NGX_AGAIN
+            || ngx_http_lua_response_output_pending(r))
+        {
+            return ngx_http_lua_response_wait_write(r);
+        }
+    }
+
+    if (r->header_only || response->status == NGX_HTTP_NO_CONTENT
+        || response->status == NGX_HTTP_NOT_MODIFIED)
+    {
+        return ngx_http_lua_response_output_pending(r)
+               ? ngx_http_lua_response_wait_write(r) : NGX_OK;
     }
 
     for ( ;; ) {
@@ -72,15 +98,32 @@ ngx_http_lua_send_response(ngx_http_request_t *r,
                 continue;
             }
 
-            if (rc != NGX_OK) {
+            if (rc != NGX_OK && rc != NGX_AGAIN) {
                 return rc;
+            }
+
+            if (rc == NGX_AGAIN
+                || ngx_http_lua_response_output_pending(r))
+            {
+                return ngx_http_lua_response_wait_write(r);
             }
 
             continue;
         }
 
         if (rc == NGX_DONE) {
-            return ngx_http_lua_send_response_last(r);
+            rc = ngx_http_lua_send_response_last(r);
+            if (rc != NGX_OK && rc != NGX_AGAIN) {
+                return rc;
+            }
+
+            if (rc == NGX_AGAIN
+                || ngx_http_lua_response_output_pending(r))
+            {
+                return ngx_http_lua_response_wait_write(r);
+            }
+
+            return NGX_OK;
         }
 
         if (rc == NGX_AGAIN) {
@@ -300,6 +343,128 @@ ngx_http_lua_send_response_last(ngx_http_request_t *r)
     out.next = NULL;
 
     return ngx_http_output_filter(r, &out);
+}
+
+
+static ngx_uint_t
+ngx_http_lua_response_output_pending(ngx_http_request_t *r)
+{
+    ngx_connection_t  *c;
+
+    c = r->connection;
+
+    return r->buffered || r->postponed
+           || (r == r->main && c->buffered);
+}
+
+
+static ngx_int_t
+ngx_http_lua_response_wait_write(ngx_http_request_t *r)
+{
+    ngx_event_t               *wev;
+    ngx_connection_t          *c;
+    ngx_http_core_loc_conf_t  *clcf;
+
+    c = r->connection;
+    wev = c->write;
+
+    r->http_state = NGX_HTTP_WRITING_REQUEST_STATE;
+    r->read_event_handler = r->discard_body
+                            ? ngx_http_discarded_request_body_handler
+                            : ngx_http_test_reading;
+    r->write_event_handler = ngx_http_lua_response_write_handler;
+
+    if (wev->ready && wev->delayed) {
+        return NGX_AGAIN;
+    }
+
+    clcf = ngx_http_get_module_loc_conf(r, ngx_http_core_module);
+
+    if (!wev->delayed) {
+        ngx_add_timer(wev, clcf->send_timeout);
+    }
+
+    if (ngx_handle_write_event(wev, clcf->send_lowat) != NGX_OK) {
+        return NGX_ERROR;
+    }
+
+    return NGX_AGAIN;
+}
+
+
+static void
+ngx_http_lua_response_write_handler(ngx_http_request_t *r)
+{
+    ngx_int_t                  rc;
+    ngx_event_t               *wev;
+    ngx_connection_t          *c;
+    ngx_http_lua_ctx_t        *ctx;
+    ngx_http_core_loc_conf_t  *clcf;
+
+    c = r->connection;
+    wev = c->write;
+    ctx = ngx_http_get_module_ctx(r, ngx_http_lua_module);
+
+    if (ctx == NULL || ctx->response == NULL) {
+        ngx_http_finalize_request(r, NGX_HTTP_INTERNAL_SERVER_ERROR);
+        return;
+    }
+
+    clcf = ngx_http_get_module_loc_conf(r->main, ngx_http_core_module);
+
+    if (wev->timedout) {
+        ngx_log_error(NGX_LOG_INFO, c->log, NGX_ETIMEDOUT,
+                      "client timed out while sending Lua response");
+        c->timedout = 1;
+        ngx_http_finalize_request(r, NGX_HTTP_REQUEST_TIME_OUT);
+        return;
+    }
+
+    if (wev->delayed || r->aio) {
+        if (!wev->delayed) {
+            ngx_add_timer(wev, clcf->send_timeout);
+        }
+
+        if (ngx_handle_write_event(wev, clcf->send_lowat) != NGX_OK) {
+            ngx_http_finalize_request(r, NGX_ERROR);
+        }
+
+        return;
+    }
+
+    rc = ngx_http_output_filter(r, NULL);
+
+    if (rc != NGX_OK && rc != NGX_AGAIN) {
+        ngx_http_finalize_request(r, rc);
+        return;
+    }
+
+    if (rc == NGX_AGAIN || ngx_http_lua_response_output_pending(r)) {
+        if (ngx_http_lua_response_wait_write(r) == NGX_ERROR) {
+            ngx_http_finalize_request(r, NGX_ERROR);
+        }
+
+        return;
+    }
+
+    if (wev->timer_set) {
+        ngx_del_timer(wev);
+    }
+
+    r->write_event_handler = ngx_http_request_empty_handler;
+
+    if (r->response_sent) {
+        ngx_http_finalize_request(r, NGX_OK);
+        return;
+    }
+
+    rc = ngx_http_lua_send_response(r, ctx->response);
+
+    if (rc == NGX_AGAIN) {
+        return;
+    }
+
+    ngx_http_finalize_request(r, rc);
 }
 
 

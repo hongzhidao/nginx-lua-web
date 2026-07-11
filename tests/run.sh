@@ -2552,6 +2552,7 @@ http {
         }
 
         location /lua-body-stream {
+            client_max_body_size 32m;
             lua_web_file $TEST_ROOT/app-body-stream.lua;
         }
 
